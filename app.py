@@ -471,7 +471,7 @@ st.markdown("""
 def load_business_names():
     """Load unique business names from CSV file"""
     try:
-        csv_path = "/Users/nithi/Desktop/TODC/Daily Dashboard/Account Information-McDonalds.csv"
+        csv_path = "Account Information-McDonalds.csv"
         df = pd.read_csv(csv_path)
         
         # Get unique business names and sort them
@@ -491,7 +491,7 @@ def get_store_ids_for_operators(selected_operators):
         if not selected_operators or "All" in selected_operators:
             return None  # No filtering needed
         
-        csv_path = "/Users/nithi/Desktop/TODC/Daily Dashboard/Account Information-McDonalds.csv"
+        csv_path = "Account Information-McDonalds.csv"
         df = pd.read_csv(csv_path)
         
         # Filter by selected operators

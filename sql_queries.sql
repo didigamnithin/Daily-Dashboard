@@ -191,3 +191,30 @@ WHERE DATE >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 30 DAY
 GROUP BY CAMPAIGN_NAME, STORE_NAME
 ORDER BY total_sales DESC
 LIMIT 10;
+
+-- Operator-wise Sales, Orders, and ROAS Query
+-- This query aggregates data by operator (Business Name) for the selected date range
+WITH operator_data AS (
+  SELECT 
+    STORE_ID,
+    SUM(CAST(SALES AS FLOAT64)) as total_sales,
+    SUM(CAST(ORDERS AS INT64)) as total_orders,
+    AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+    COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
+    COUNT(*) as total_records
+  FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
+  WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
+    AND SALES IS NOT NULL
+    AND SALES != 'null'
+    {store_filter}
+  GROUP BY STORE_ID
+)
+SELECT 
+  od.STORE_ID,
+  od.total_sales,
+  od.total_orders,
+  od.avg_roas,
+  od.total_campaigns,
+  od.total_records
+FROM operator_data od
+ORDER BY od.total_sales DESC;

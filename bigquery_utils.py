@@ -130,6 +130,82 @@ class BigQueryClient:
         """
         return self.execute_query(query)
     
+    def get_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
+        """Get operator-wise sales, orders, and ROAS data"""
+        store_filter = ""
+        if store_ids:
+            store_ids_str = "', '".join(store_ids)
+            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        query = f"""
+        WITH operator_data AS (
+          SELECT 
+            STORE_ID,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
+            COUNT(*) as total_records
+          FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            {store_filter}
+          GROUP BY STORE_ID
+        )
+        SELECT 
+          od.STORE_ID,
+          od.total_sales,
+          od.total_orders,
+          od.avg_roas,
+          od.total_campaigns,
+          od.total_records
+        FROM operator_data od
+        ORDER BY od.total_sales DESC
+        """
+        return self.execute_query(query)
+    
+    def get_operator_aggregated_data(self, start_date: str, end_date: str, operator_store_mapping: dict) -> pd.DataFrame:
+        """Get aggregated data for each operator by running queries for their store IDs"""
+        all_results = []
+        
+        for operator_name, store_ids in operator_store_mapping.items():
+            if not store_ids:
+                continue
+                
+            store_ids_str = "', '".join(store_ids)
+            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            
+            # Escape single quotes in operator name for SQL
+            escaped_operator_name = operator_name.replace("'", "''")
+            
+            query = f"""
+            SELECT 
+              '{escaped_operator_name}' as operator_name,
+              SUM(CAST(SALES AS FLOAT64)) as total_sales,
+              SUM(CAST(ORDERS AS INT64)) as total_orders,
+              AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+              COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
+              COUNT(*) as total_records
+            FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+            WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
+              AND SALES IS NOT NULL
+              AND SALES != 'null'
+              {store_filter}
+            """
+            
+            result = self.execute_query(query)
+            if not result.empty:
+                # Add store_count with the actual number of stores from our mapping
+                result_dict = result.iloc[0].to_dict()
+                result_dict['store_count'] = len(store_ids)
+                all_results.append(result_dict)
+        
+        if all_results:
+            return pd.DataFrame(all_results).sort_values('total_sales', ascending=False)
+        else:
+            return pd.DataFrame()
+    
     def _get_dd_pop_query(self, store_ids: list = None) -> str:
         """Get DoorDash PoP query"""
         store_filter = ""

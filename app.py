@@ -506,6 +506,34 @@ def get_store_ids_for_operators(selected_operators):
         st.error(f"Error loading store IDs: {e}")
         return None
 
+@st.cache_data
+def get_operators_with_store_ids():
+    """Get all unique operators with their store IDs"""
+    try:
+        csv_path = "Account Information-McDonalds.csv"
+        df = pd.read_csv(csv_path)
+        
+        # Group by Business Name and get all store IDs for each operator
+        operator_data = {}
+        for _, row in df.iterrows():
+            business_name = row['Business Name']
+            store_id = row['DoorDash Store ID']
+            
+            if pd.notna(business_name) and pd.notna(store_id):
+                business_name = business_name.strip()
+                store_id = str(int(store_id))
+                
+                if business_name not in operator_data:
+                    operator_data[business_name] = []
+                
+                if store_id not in operator_data[business_name]:
+                    operator_data[business_name].append(store_id)
+        
+        return operator_data
+    except Exception as e:
+        st.error(f"Error loading operators data: {e}")
+        return {}
+
 # Initialize session state
 if 'bigquery_client' not in st.session_state:
     st.session_state.bigquery_client = None
@@ -742,6 +770,80 @@ def render_trend_chart(trend_data: pd.DataFrame):
     
     st.plotly_chart(fig, use_container_width=True)
 
+def render_operator_summary_table(operator_data: pd.DataFrame):
+    """Render operator summary table with aggregated data"""
+    if operator_data.empty:
+        st.warning("No operator data available")
+        return
+    
+    st.subheader("🏢 Operator Performance Summary")
+    
+    # Format the data for display
+    display_data = operator_data.copy()
+    display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
+    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
+    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+    display_data['store_count'] = display_data['store_count'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
+    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
+    
+    # Add performance ranking
+    display_data['rank'] = range(1, len(display_data) + 1)
+    
+    # Reorder columns for better display
+    column_order = ['rank', 'operator_name', 'total_sales', 'total_orders', 'avg_roas', 'store_count', 'total_campaigns']
+    display_data = display_data[column_order]
+    
+    st.dataframe(
+        display_data,
+        column_config={
+            "rank": st.column_config.NumberColumn("Rank", width="small"),
+            "operator_name": st.column_config.TextColumn("Operator", width="large"),
+            "total_sales": st.column_config.TextColumn("Total Sales", width="medium"),
+            "total_orders": st.column_config.TextColumn("Total Orders", width="medium"),
+            "avg_roas": st.column_config.TextColumn("Avg ROAS", width="small"),
+            "store_count": st.column_config.TextColumn("Stores", width="small"),
+            "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+def render_store_wise_breakdown(store_data: pd.DataFrame):
+    """Render store-wise breakdown table"""
+    if store_data.empty:
+        st.warning("No store data available")
+        return
+    
+    st.subheader("🏪 Store-wise Performance Breakdown")
+    
+    # Format the data for display
+    display_data = store_data.copy()
+    display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
+    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
+    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
+    
+    # Add performance ranking
+    display_data['rank'] = range(1, len(display_data) + 1)
+    
+    # Reorder columns for better display (removed operator_name since we're filtering by selected operators)
+    column_order = ['rank', 'STORE_ID', 'total_sales', 'total_orders', 'avg_roas', 'total_campaigns']
+    display_data = display_data[column_order]
+    
+    st.dataframe(
+        display_data,
+        column_config={
+            "rank": st.column_config.NumberColumn("Rank", width="small"),
+            "STORE_ID": st.column_config.TextColumn("Store ID", width="medium"),
+            "total_sales": st.column_config.TextColumn("Total Sales", width="medium"),
+            "total_orders": st.column_config.TextColumn("Total Orders", width="medium"),
+            "avg_roas": st.column_config.TextColumn("Avg ROAS", width="small"),
+            "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
 def render_top_campaigns(campaigns_data: pd.DataFrame):
     """Render top performing campaigns table"""
     if campaigns_data.empty:
@@ -808,8 +910,29 @@ def main():
         mom_data = st.session_state.bigquery_client.get_mom_data(st.session_state.selected_platform)
         yoy_data = st.session_state.bigquery_client.get_yoy_data(st.session_state.selected_platform)
         
+        # Get operator data based on selection
+        if "All" in operators:
+            # Get all operators and their store IDs
+            all_operators_data = get_operators_with_store_ids()
+            operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
+                start_date_str, end_date_str, all_operators_data
+            )
+            store_breakdown_data = pd.DataFrame()  # No store breakdown for "All"
+        else:
+            # Get data for selected operators only
+            selected_operators_data = get_operators_with_store_ids()
+            filtered_operators_data = {k: v for k, v in selected_operators_data.items() if k in operators}
+            
+            operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
+                start_date_str, end_date_str, filtered_operators_data
+            )
+            
+            # Get store-wise breakdown for selected operators
+            store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
+                start_date_str, end_date_str, store_ids
+            )
+        
         # Fetch additional data (reduced for faster loading)
-        trend_data = st.session_state.bigquery_client.get_daily_trend_data(7)  # Only last 7 days initially
         campaigns_data = st.session_state.bigquery_client.get_top_campaigns(7, store_ids)  # Only last 7 days initially
     
     # Render KPI widgets
@@ -818,14 +941,19 @@ def main():
     # Add some spacing
     st.markdown("---")
     
-    # Render charts and tables
-    # Full width trend chart
-    render_trend_chart(trend_data)
+    # Render operator summary table
+    render_operator_summary_table(operator_summary_data)
+    
+    # Show store-wise breakdown only if specific operators are selected (not "All")
+    if not store_breakdown_data.empty:
+        # Add some spacing
+        st.markdown("---")
+        render_store_wise_breakdown(store_breakdown_data)
     
     # Add some spacing
     st.markdown("---")
     
-    # Full width campaigns table below the chart
+    # Full width campaigns table below the operator tables
     render_top_campaigns(campaigns_data)
     
     # Add option to load more data
@@ -833,14 +961,33 @@ def main():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📊 Load 30-Day Trend", help="Load trend data for last 30 days"):
-            with st.spinner("Loading 30-day trend data..."):
-                trend_data_30 = st.session_state.bigquery_client.get_daily_trend_data(30)
-                if not trend_data_30.empty:
-                    st.success("30-day trend data loaded!")
-                    render_trend_chart(trend_data_30)
+        if st.button("📊 Load 30-Day Operator Summary", help="Load operator summary for last 30 days"):
+            with st.spinner("Loading 30-day operator summary..."):
+                # Calculate 30 days ago from today-2
+                end_date_30 = date.today() - timedelta(days=2)
+                start_date_30 = end_date_30 - timedelta(days=30)
+                
+                if "All" in operators:
+                    all_operators_data = get_operators_with_store_ids()
+                    operator_summary_30 = st.session_state.bigquery_client.get_operator_aggregated_data(
+                        start_date_30.strftime("%Y-%m-%d"), 
+                        end_date_30.strftime("%Y-%m-%d"), 
+                        all_operators_data
+                    )
                 else:
-                    st.warning("No 30-day trend data available")
+                    selected_operators_data = get_operators_with_store_ids()
+                    filtered_operators_data = {k: v for k, v in selected_operators_data.items() if k in operators}
+                    operator_summary_30 = st.session_state.bigquery_client.get_operator_aggregated_data(
+                        start_date_30.strftime("%Y-%m-%d"), 
+                        end_date_30.strftime("%Y-%m-%d"), 
+                        filtered_operators_data
+                    )
+                
+                if not operator_summary_30.empty:
+                    st.success("30-day operator summary loaded!")
+                    render_operator_summary_table(operator_summary_30)
+                else:
+                    st.warning("No 30-day operator summary data available")
     
     with col2:
         if st.button("🏆 Load 30-Day Campaigns", help="Load top campaigns for last 30 days"):

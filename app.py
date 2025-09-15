@@ -18,6 +18,11 @@ load_dotenv('slack.env')
 # Import custom modules
 from bigquery_utils import BigQueryClient
 from slack_utils import SlackNotifier
+from cache_utils import (
+    dashboard_cache, get_cache_key_for_dashboard, save_dashboard_view, load_dashboard_view,
+    save_kpi_data, load_kpi_data, save_operator_data, load_operator_data,
+    save_store_data, load_store_data, save_campaign_data, load_campaign_data
+)
 import pandas as pd
 
 # Page configuration
@@ -565,9 +570,14 @@ def get_store_data_for_operator(operator_name: str, start_date: str, end_date: s
             return pd.DataFrame()
         
         # Get store-wise data from BigQuery
-        return st.session_state.bigquery_client.get_operator_wise_data(
-            start_date, end_date, store_ids
-        )
+        if st.session_state.selected_platform == "ubereats":
+            return st.session_state.bigquery_client.get_ue_operator_wise_data(
+                start_date, end_date, store_ids
+            )
+        else:
+            return st.session_state.bigquery_client.get_operator_wise_data(
+                start_date, end_date, store_ids
+            )
     except Exception as e:
         st.error(f"Error loading store data for {operator_name}: {e}")
         return pd.DataFrame()
@@ -577,9 +587,14 @@ def get_campaign_data_for_store(store_id: str, start_date: str, end_date: str):
     """Get campaign-level data for a specific store"""
     try:
         # Get campaign data for the store
-        return st.session_state.bigquery_client.get_top_campaigns(
-            days=30, store_ids=[store_id]
-        )
+        if st.session_state.selected_platform == "ubereats":
+            return st.session_state.bigquery_client.get_ue_top_campaigns(
+                days=30, store_ids=[store_id]
+            )
+        else:
+            return st.session_state.bigquery_client.get_top_campaigns(
+                days=30, store_ids=[store_id]
+            )
     except Exception as e:
         st.error(f"Error loading campaign data for store {store_id}: {e}")
         return pd.DataFrame()
@@ -613,24 +628,76 @@ def initialize_clients():
     if slack_webhook:
         st.session_state.slack_notifier = SlackNotifier(webhook_url=slack_webhook)
 
-def format_currency(value: float) -> str:
+def format_currency(value) -> str:
     """Format currency values"""
     if pd.isna(value) or value is None:
         return "$0.00"
-    return f"${value:,.2f}"
+    try:
+        # Handle both string and numeric values
+        if isinstance(value, str):
+            # Remove any non-numeric characters except decimal point
+            clean_value = ''.join(c for c in value if c.isdigit() or c == '.')
+            if clean_value:
+                return f"${float(clean_value):,.2f}"
+            else:
+                return "$0.00"
+        else:
+            return f"${float(value):,.2f}"
+    except (ValueError, TypeError):
+        return "$0.00"
 
-def format_percentage(value: float) -> str:
+def format_percentage(value) -> str:
     """Format percentage values with color coding"""
     if pd.isna(value) or value is None:
         return "0.0%"
     
-    formatted = f"{value:+.1f}%"
-    if value > 0:
-        return f'<span class="delta-positive">{formatted}</span>'
-    elif value < 0:
-        return f'<span class="delta-negative">{formatted}</span>'
-    else:
-        return f'<span class="delta-neutral">{formatted}</span>'
+    try:
+        # Handle both string and numeric values
+        if isinstance(value, str):
+            # Remove any non-numeric characters except decimal point and minus sign
+            clean_value = ''.join(c for c in value if c.isdigit() or c in '.-')
+            if clean_value:
+                numeric_value = float(clean_value)
+            else:
+                return "0.0%"
+        else:
+            numeric_value = float(value)
+        
+        formatted = f"{numeric_value:+.1f}%"
+        if numeric_value > 0:
+            return f'<span class="delta-positive">{formatted}</span>'
+        elif numeric_value < 0:
+            return f'<span class="delta-negative">{formatted}</span>'
+        else:
+            return f'<span class="delta-neutral">{formatted}</span>'
+    except (ValueError, TypeError):
+        return "0.0%"
+
+def safe_float(value, default=0.0):
+    """Safely convert value to float"""
+    if pd.isna(value) or value is None:
+        return default
+    try:
+        if isinstance(value, str):
+            clean_value = ''.join(c for c in value if c.isdigit() or c in '.-')
+            return float(clean_value) if clean_value else default
+        else:
+            return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_int(value, default=0):
+    """Safely convert value to int"""
+    if pd.isna(value) or value is None:
+        return default
+    try:
+        if isinstance(value, str):
+            clean_value = ''.join(c for c in value if c.isdigit() or c in '.-')
+            return int(float(clean_value)) if clean_value else default
+        else:
+            return int(float(value))
+    except (ValueError, TypeError):
+        return default
 
 def create_metric_card(title: str, value: str, delta: str = None, subtitle: str = None):
     """Create a styled metric card"""
@@ -724,67 +791,33 @@ def render_sidebar():
         if st.button("🔄 Refresh Data", type="primary"):
             st.rerun()
         
-        # Slack Integration Status
+        # Slack Integration Status (simplified)
         st.subheader("Slack Integration")
         if st.session_state.slack_notifier:
-            st.success("✅ Slack Connected - Summary will be sent automatically on load")
-            
-            # Show Slack configuration details
-            with st.expander("🔧 Slack Configuration Details"):
-                slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
-                slack_channel = os.getenv('SLACK_CHANNEL', 'alerts')
-                
-                st.write(f"**Channel:** {slack_channel}")
-                st.write(f"**Webhook URL:** {slack_webhook[:50]}...")
-                st.write("**Connection Type:** Webhook")
-                
-                # Test configuration
-                if st.button("🔍 Test Slack Configuration"):
-                    try:
-                        if st.session_state.slack_notifier.test_connection():
-                            st.success("✅ Slack configuration is working correctly!")
-                        else:
-                            st.error("❌ Slack configuration test failed")
-                    except Exception as e:
-                        st.error(f"❌ Configuration test error: {str(e)}")
-            
-            # Manual Slack alert buttons
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("📤 Test Alert", help="Send a test alert to Slack"):
-                    try:
-                        # Test the connection first
-                        if st.session_state.slack_notifier.test_connection():
-                            # Send a test message
-                            channel = os.getenv('SLACK_CHANNEL', '#alerts')
-                            test_message = "🧪 Test alert from Daily Dashboard - Application is running successfully!"
-                            success = st.session_state.slack_notifier.send_alert(channel, test_message)
-                            
-                            if success:
-                                st.success("✅ Test alert sent successfully to Slack!")
-                            else:
-                                st.error("❌ Failed to send test alert to Slack")
-                        else:
-                            st.error("❌ Slack connection test failed")
-                    except Exception as e:
-                        st.error(f"❌ Error sending test alert: {str(e)}")
-            
-            with col2:
-                if st.button("📊 Send Summary", help="Send dashboard summary to Slack (bypass daily limit)"):
-                    try:
-                        # Force send summary by clearing the daily flag
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        summary_key = f"summary_sent_{today}"
-                        if summary_key in st.session_state:
-                            del st.session_state[summary_key]
-                        
-                        st.info("🔄 Refreshing data to send summary...")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+            st.success("✅ Slack Connected")
         else:
-            st.warning("⚠️ Slack not configured - No automatic summaries will be sent")
+            st.warning("⚠️ Slack not configured")
+        
+        # Cache Management
+        st.subheader("Cache Management")
+        
+        # Show cache stats
+        cache_stats = dashboard_cache.get_session_stats()
+        if 'error' not in cache_stats:
+            st.caption(f"📁 {cache_stats['file_count']} cached views ({cache_stats['total_size'] / 1024:.1f} KB)")
+        
+        # Cache management buttons
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🗑️ Clear Cache", help="Clear current session cache"):
+                dashboard_cache.clear_session_cache()
+                st.rerun()
+        
+        with col2:
+            if st.button("🧹 Clean Old", help="Clean old session caches"):
+                dashboard_cache.clear_old_sessions()
+                st.success("Old caches cleaned!")
         
         return start_date, end_date, operators
 
@@ -898,10 +931,10 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
     # Format the data for display
     display_data = operator_data.copy()
     display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
-    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
-    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-    display_data['store_count'] = display_data['store_count'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
-    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
+    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{safe_float(x):.2f}x" if safe_float(x) != 0.0 else "N/A")
+    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{safe_int(x):,}")
+    display_data['store_count'] = display_data['store_count'].apply(lambda x: f"{safe_int(x)}")
+    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{safe_int(x)}")
     
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
@@ -953,15 +986,15 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
     # Format the data for display
     display_data = store_data.copy()
     display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
-    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
-    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "0")
+    display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{safe_float(x):.2f}x" if safe_float(x) != 0.0 else "N/A")
+    display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{safe_int(x):,}")
+    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{safe_int(x)}")
     
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
     
     # Reorder columns for better display (removed operator_name since we're filtering by selected operators)
-    column_order = ['rank', 'STORE_ID', 'total_sales', 'total_orders', 'avg_roas', 'total_campaigns']
+    column_order = ['rank', 'STORE_ID', 'STORE_NAME', 'total_sales', 'total_orders', 'avg_roas', 'total_campaigns']
     display_data = display_data[column_order]
     
     # Create clickable rows for drilldown
@@ -970,6 +1003,7 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "STORE_ID": st.column_config.TextColumn("Store ID", width="medium"),
+            "STORE_NAME": st.column_config.TextColumn("Store Name", width="large"),
             "total_sales": st.column_config.TextColumn("Total Sales", width="medium"),
             "total_orders": st.column_config.TextColumn("Total Orders", width="medium"),
             "avg_roas": st.column_config.TextColumn("Avg ROAS", width="small"),
@@ -983,15 +1017,29 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
     # Note: DataFrame selection is not available in this Streamlit version
     # Using alternative approach with selectbox for store selection
     st.markdown("### 🔍 Select Store for Drilldown")
-    store_options = ["Select a store..."] + display_data['STORE_ID'].astype(str).tolist()
-    selected_store_id = st.selectbox("Choose store to view campaign details:", store_options)
     
-    if selected_store_id and selected_store_id != "Select a store...":
+    # Create store options with both store name and ID for display
+    store_options = ["Select a store..."]
+    store_mapping = {}  # Store name -> Store ID mapping
+    
+    for _, row in display_data.iterrows():
+        store_name = row['STORE_NAME']
+        store_id = row['STORE_ID']
+        display_text = f"{store_name} ({store_id})"
+        store_options.append(display_text)
+        store_mapping[display_text] = store_id
+    
+    selected_store_display = st.selectbox("Choose store to view campaign details:", store_options)
+    
+    if selected_store_display and selected_store_display != "Select a store...":
+        # Get the actual store ID from the mapping
+        selected_store_id = store_mapping[selected_store_display]
+        
         # Update session state for drilldown
         st.session_state.drilldown_level = "campaign"
         st.session_state.selected_store = selected_store_id
         
-        st.success(f"🔍 Selected store: **{selected_store_id}** - Loading campaign details...")
+        st.success(f"🔍 Selected store: **{selected_store_display}** - Loading campaign details...")
         st.rerun()
 
 def render_campaign_breakdown(campaign_data: pd.DataFrame):
@@ -1007,9 +1055,9 @@ def render_campaign_breakdown(campaign_data: pd.DataFrame):
     if 'total_sales' in display_data.columns:
         display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
     if 'avg_roas' in display_data.columns:
-        display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
+        display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{safe_float(x):.2f}x" if safe_float(x) != 0.0 else "N/A")
     if 'total_orders' in display_data.columns:
-        display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+        display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{safe_int(x):,}")
     
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
@@ -1137,39 +1185,93 @@ def main():
     # Get store IDs for selected operators
     store_ids = get_store_ids_for_operators(operators)
     
-    # Load data with progress indicators
-    with st.spinner("Loading data..."):
-        # Fetch KPI data
-        pop_data = st.session_state.bigquery_client.get_pop_data(
-            start_date_str, end_date_str, st.session_state.selected_platform, store_ids
-        )
-        mom_data = st.session_state.bigquery_client.get_mom_data(st.session_state.selected_platform)
-        yoy_data = st.session_state.bigquery_client.get_yoy_data(st.session_state.selected_platform)
+    # Generate cache key for current dashboard state
+    cache_key = get_cache_key_for_dashboard(
+        platform=st.session_state.selected_platform,
+        start_date=start_date_str,
+        end_date=end_date_str,
+        operators=operators,
+        drilldown_level=st.session_state.drilldown_level,
+        selected_operator=st.session_state.selected_operator,
+        selected_store=st.session_state.selected_store
+    )
+    
+    # Check if we have cached data for this exact state
+    cached_data = load_dashboard_view(cache_key)
+    
+    if cached_data:
+        # Use cached data
+        st.info("📁 Loading from cache...")
+        pop_data = cached_data.get('pop_data', {})
+        mom_data = cached_data.get('mom_data', {})
+        yoy_data = cached_data.get('yoy_data', {})
+        operator_summary_data = cached_data.get('operator_summary_data', pd.DataFrame())
+        store_breakdown_data = cached_data.get('store_breakdown_data', pd.DataFrame())
+        campaigns_data = cached_data.get('campaigns_data', pd.DataFrame())
+    else:
+        # Load data with progress indicators
+        with st.spinner("Loading data from BigQuery..."):
+            # Fetch KPI data
+            pop_data = st.session_state.bigquery_client.get_pop_data(
+                start_date_str, end_date_str, st.session_state.selected_platform, store_ids
+            )
+            mom_data = st.session_state.bigquery_client.get_mom_data(st.session_state.selected_platform)
+            yoy_data = st.session_state.bigquery_client.get_yoy_data(st.session_state.selected_platform)
         
-        # Get operator data based on selection
-        if "All" in operators:
-            # Get all operators and their store IDs
-            all_operators_data = get_operators_with_store_ids()
-            operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                start_date_str, end_date_str, all_operators_data
-            )
-            store_breakdown_data = pd.DataFrame()  # No store breakdown for "All"
-        else:
-            # Get data for selected operators only
-            selected_operators_data = get_operators_with_store_ids()
-            filtered_operators_data = {k: v for k, v in selected_operators_data.items() if k in operators}
+            # Get operator data based on selection
+            if "All" in operators:
+                # Get all operators and their store IDs
+                all_operators_data = get_operators_with_store_ids()
+                if st.session_state.selected_platform == "ubereats":
+                    operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
+                        start_date_str, end_date_str, all_operators_data
+                    )
+                else:
+                    operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
+                        start_date_str, end_date_str, all_operators_data
+                    )
+                store_breakdown_data = pd.DataFrame()  # No store breakdown for "All"
+            else:
+                # Get data for selected operators only
+                selected_operators_data = get_operators_with_store_ids()
+                filtered_operators_data = {k: v for k, v in selected_operators_data.items() if k in operators}
+                
+                if st.session_state.selected_platform == "ubereats":
+                    operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
+                        start_date_str, end_date_str, filtered_operators_data
+                    )
+                else:
+                    operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
+                        start_date_str, end_date_str, filtered_operators_data
+                    )
+                
+                # Get store-wise breakdown for selected operators
+                if st.session_state.selected_platform == "ubereats":
+                    store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
+                        start_date_str, end_date_str, store_ids
+                    )
+                else:
+                    store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
+                        start_date_str, end_date_str, store_ids
+                    )
             
-            operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                start_date_str, end_date_str, filtered_operators_data
-            )
+            # Fetch additional data (reduced for faster loading)
+            if st.session_state.selected_platform == "ubereats":
+                campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns(7, store_ids)  # Only last 7 days initially
+            else:
+                campaigns_data = st.session_state.bigquery_client.get_top_campaigns(7, store_ids)  # Only last 7 days initially
             
-            # Get store-wise breakdown for selected operators
-            store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
-                start_date_str, end_date_str, store_ids
-            )
-        
-        # Fetch additional data (reduced for faster loading)
-        campaigns_data = st.session_state.bigquery_client.get_top_campaigns(7, store_ids)  # Only last 7 days initially
+            # Save data to cache
+            dashboard_data = {
+                'pop_data': pop_data,
+                'mom_data': mom_data,
+                'yoy_data': yoy_data,
+                'operator_summary_data': operator_summary_data,
+                'store_breakdown_data': store_breakdown_data,
+                'campaigns_data': campaigns_data
+            }
+            save_dashboard_view(dashboard_data, cache_key)
+            st.success("💾 Data cached for faster future access!")
     
     # Send dashboard summary to Slack on load
     send_dashboard_summary_on_load(pop_data, mom_data, yoy_data, start_date_str, end_date_str)
@@ -1216,16 +1318,7 @@ def main():
     
     # Note: Slack alerts are now sent automatically on dashboard load
     
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        f"<div style='text-align: center; color: #6b7280; font-size: 0.8rem;'>"
-        f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
-        f"Platform: {st.session_state.selected_platform.title()} | "
-        f"Date Range: {start_date_str} to {end_date_str}"
-        f"</div>",
-        unsafe_allow_html=True
-    )
+    # Footer removed as requested
 
 if __name__ == "__main__":
     main()

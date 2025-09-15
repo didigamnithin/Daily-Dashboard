@@ -102,6 +102,7 @@ class BigQueryClient:
           AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
           AND SALES IS NOT NULL
           AND SALES != 'null'
+          AND SALES != ''
         GROUP BY DATE
         ORDER BY DATE
         """.format(
@@ -114,8 +115,11 @@ class BigQueryClient:
         """Get top performing campaigns"""
         store_filter = ""
         if store_ids:
-            store_ids_str = "', '".join(store_ids)
-            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
         
         query = """
         SELECT 
@@ -130,6 +134,7 @@ class BigQueryClient:
           AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
           AND SALES IS NOT NULL
           AND SALES != 'null'
+          AND SALES != ''
           {store_filter}
         GROUP BY CAMPAIGN_NAME, STORE_NAME
         ORDER BY total_sales DESC
@@ -155,6 +160,7 @@ class BigQueryClient:
         WITH operator_data AS (
           SELECT 
             STORE_ID,
+            STORE_NAME,
             SUM(CAST(SALES AS FLOAT64)) as total_sales,
             SUM(CAST(ORDERS AS INT64)) as total_orders,
             AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
@@ -164,11 +170,13 @@ class BigQueryClient:
           WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
             {store_filter}
-          GROUP BY STORE_ID
+          GROUP BY STORE_ID, STORE_NAME
         )
         SELECT 
           od.STORE_ID,
+          od.STORE_NAME,
           od.total_sales,
           od.total_orders,
           od.avg_roas,
@@ -213,6 +221,7 @@ class BigQueryClient:
             WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
               AND SALES IS NOT NULL
               AND SALES != 'null'
+              AND SALES != ''
               {store_filter}
             """.format(
                 project_id=self.project_id,
@@ -251,6 +260,7 @@ class BigQueryClient:
           WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
             {store_filter}
         ),
         previous_period AS (
@@ -262,6 +272,7 @@ class BigQueryClient:
           WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
             {store_filter}
         )
         SELECT 
@@ -292,26 +303,26 @@ class BigQueryClient:
         return f"""
         WITH selected_period_ue AS (
           SELECT 
-            SUM(CAST(REGEXP_REPLACE(SALES_USD, r'[$,]', '') AS FLOAT64)) as current_sales,
-            COUNT(DISTINCT CAMPAIGN_UUID) as current_campaigns,
+            SUM(CAST(SALES AS FLOAT64)) as current_sales,
+            COUNT(DISTINCT CAMPAIGN_ID) as current_campaigns,
             SUM(CAST(ORDERS AS INT64)) as current_orders
-          FROM `todc-marketing.merchant_portal_upload.ue_raw_offers_campaigns`
-          WHERE START_DATE <= '{{end_date}}' AND END_DATE >= '{{start_date}}'
-            AND SALES_USD IS NOT NULL
-            AND SALES_USD != '$0'
-            AND SALES_USD != 'null'
+          FROM `todc-marketing.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
             {store_filter}
         ),
         previous_period_ue AS (
           SELECT 
-            SUM(CAST(REGEXP_REPLACE(SALES_USD, r'[$,]', '') AS FLOAT64)) as prev_sales,
-            COUNT(DISTINCT CAMPAIGN_UUID) as prev_campaigns,
+            SUM(CAST(SALES AS FLOAT64)) as prev_sales,
+            COUNT(DISTINCT CAMPAIGN_ID) as prev_campaigns,
             SUM(CAST(ORDERS AS INT64)) as prev_orders
-          FROM `todc-marketing.merchant_portal_upload.ue_raw_offers_campaigns`
-          WHERE START_DATE <= '{{prev_end_date}}' AND END_DATE >= '{{prev_start_date}}'
-            AND SALES_USD IS NOT NULL
-            AND SALES_USD != '$0'
-            AND SALES_USD != 'null'
+          FROM `todc-marketing.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
             {store_filter}
         )
         SELECT 
@@ -345,6 +356,7 @@ class BigQueryClient:
             AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
         ),
         previous_month AS (
           SELECT 
@@ -356,6 +368,7 @@ class BigQueryClient:
             AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 MONTH)
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
         )
         SELECT 
           current_month_sales,
@@ -388,6 +401,7 @@ class BigQueryClient:
             AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
         ),
         previous_year AS (
           SELECT 
@@ -399,6 +413,7 @@ class BigQueryClient:
             AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 YEAR)
             AND SALES IS NOT NULL
             AND SALES != 'null'
+            AND SALES != ''
         )
         SELECT 
           current_year_sales,
@@ -417,3 +432,135 @@ class BigQueryClient:
           END as yoy_orders_delta_percent
         FROM current_year, previous_year
         """
+    
+    def get_ue_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
+        """Get operator-wise sales, orders, and ROAS data for UberEats"""
+        store_filter = ""
+        if store_ids:
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        query = """
+        WITH operator_data AS (
+          SELECT 
+            STORE_ID,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
+            COUNT(*) as total_records
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+            {store_filter}
+          GROUP BY STORE_ID, STORE_NAME
+        )
+        SELECT 
+          od.STORE_ID,
+          od.STORE_NAME,
+          od.total_sales,
+          od.total_orders,
+          od.avg_roas,
+          od.total_campaigns,
+          od.total_records
+        FROM operator_data od
+        ORDER BY od.total_sales DESC
+        """.format(
+            project_id=self.project_id,
+            start_date=start_date,
+            end_date=end_date,
+            store_filter=store_filter
+        )
+        return self.execute_query(query)
+    
+    def get_ue_operator_aggregated_data(self, start_date: str, end_date: str, operator_store_mapping: dict) -> pd.DataFrame:
+        """Get aggregated data for each operator by running queries for their store IDs (UberEats)"""
+        all_results = []
+        
+        for operator_name, store_ids in operator_store_mapping.items():
+            if not store_ids:
+                continue
+            
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if not valid_store_ids:
+                continue
+                
+            # Properly format store IDs for SQL IN clause
+            store_ids_str = "', '".join(valid_store_ids)
+            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            
+            # Use string formatting to avoid f-string issues with curly braces
+            query = """
+            SELECT 
+              SUM(CAST(SALES AS FLOAT64)) as total_sales,
+              SUM(CAST(ORDERS AS INT64)) as total_orders,
+              AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+              COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
+              COUNT(*) as total_records
+            FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+            WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
+              AND SALES IS NOT NULL
+              AND SALES != 'null'
+              AND SALES != ''
+              {store_filter}
+            """.format(
+                project_id=self.project_id,
+                start_date=start_date,
+                end_date=end_date,
+                store_filter=store_filter
+            )
+            
+            result = self.execute_query(query)
+            if not result.empty:
+                # Add operator name and store_count to the result
+                result_dict = result.iloc[0].to_dict()
+                result_dict['operator_name'] = operator_name
+                result_dict['store_count'] = len(valid_store_ids)
+                all_results.append(result_dict)
+        
+        if all_results:
+            return pd.DataFrame(all_results).sort_values('total_sales', ascending=False)
+        else:
+            return pd.DataFrame()
+    
+    def get_ue_top_campaigns(self, days: int = 30, store_ids: list = None) -> pd.DataFrame:
+        """Get top performing campaigns for UberEats"""
+        store_filter = ""
+        if store_ids:
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        query = """
+        SELECT 
+          CAMPAIGN_NAME,
+          STORE_NAME,
+          SUM(CAST(SALES AS FLOAT64)) as total_sales,
+          SUM(CAST(ORDERS AS INT64)) as total_orders,
+          AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+          COUNT(*) as campaign_days
+        FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+        WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL {days} DAY)
+          AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
+          AND SALES IS NOT NULL
+          AND SALES != 'null'
+          AND SALES != ''
+          {store_filter}
+        GROUP BY CAMPAIGN_NAME, STORE_NAME
+        ORDER BY total_sales DESC
+        LIMIT 10
+        """.format(
+            project_id=self.project_id,
+            days=days,
+            store_filter=store_filter
+        )
+        return self.execute_query(query)

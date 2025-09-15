@@ -497,9 +497,18 @@ def get_store_ids_for_operators(selected_operators):
         # Filter by selected operators
         filtered_df = df[df['Business Name'].isin(selected_operators)]
         
-        # Get unique DoorDash Store IDs
-        store_ids = filtered_df['DoorDash Store ID'].dropna().unique()
-        store_ids = [str(int(sid)) for sid in store_ids if pd.notna(sid) and str(sid).strip() != '']
+        # Get unique DoorDash Store IDs with proper validation
+        store_ids = []
+        for sid in filtered_df['DoorDash Store ID'].dropna().unique():
+            try:
+                if pd.isna(sid) or str(sid).strip() == '' or str(sid).strip().lower() == 'nan':
+                    continue
+                store_id_str = str(int(float(sid))).strip()
+                if store_id_str and store_id_str not in store_ids:
+                    store_ids.append(store_id_str)
+            except (ValueError, TypeError):
+                # Skip invalid store IDs
+                continue
         
         return store_ids if store_ids else None
     except Exception as e:
@@ -521,13 +530,23 @@ def get_operators_with_store_ids():
             
             if pd.notna(business_name) and pd.notna(store_id):
                 business_name = business_name.strip()
-                store_id = str(int(store_id))
+                
+                # Safely convert store_id to string, handling non-numeric values
+                try:
+                    if pd.isna(store_id) or str(store_id).strip() == '' or str(store_id).strip().lower() == 'nan':
+                        continue
+                    store_id_str = str(int(float(store_id))).strip()
+                    if not store_id_str:
+                        continue
+                except (ValueError, TypeError):
+                    # Skip invalid store IDs
+                    continue
                 
                 if business_name not in operator_data:
                     operator_data[business_name] = []
                 
-                if store_id not in operator_data[business_name]:
-                    operator_data[business_name].append(store_id)
+                if store_id_str not in operator_data[business_name]:
+                    operator_data[business_name].append(store_id_str)
         
         return operator_data
     except Exception as e:

@@ -87,20 +87,23 @@ class BigQueryClient:
     
     def get_daily_trend_data(self, days: int = 30) -> pd.DataFrame:
         """Get daily sales trend data"""
-        query = f"""
+        query = """
         SELECT 
           DATE,
           SUM(CAST(SALES AS FLOAT64)) as daily_sales,
           COUNT(DISTINCT CAMPAIGN_ID) as daily_campaigns,
           SUM(CAST(ORDERS AS INT64)) as daily_orders
-        FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+        FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
         WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL {days} DAY)
           AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
           AND SALES IS NOT NULL
           AND SALES != 'null'
         GROUP BY DATE
         ORDER BY DATE
-        """
+        """.format(
+            project_id=self.project_id,
+            days=days
+        )
         return self.execute_query(query)
     
     def get_top_campaigns(self, days: int = 30, store_ids: list = None) -> pd.DataFrame:
@@ -110,7 +113,7 @@ class BigQueryClient:
             store_ids_str = "', '".join(store_ids)
             store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
         
-        query = f"""
+        query = """
         SELECT 
           CAMPAIGN_NAME,
           STORE_NAME,
@@ -118,7 +121,7 @@ class BigQueryClient:
           SUM(CAST(ORDERS AS INT64)) as total_orders,
           AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
           COUNT(*) as campaign_days
-        FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+        FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
         WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL {days} DAY)
           AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
           AND SALES IS NOT NULL
@@ -127,17 +130,24 @@ class BigQueryClient:
         GROUP BY CAMPAIGN_NAME, STORE_NAME
         ORDER BY total_sales DESC
         LIMIT 10
-        """
+        """.format(
+            project_id=self.project_id,
+            days=days,
+            store_filter=store_filter
+        )
         return self.execute_query(query)
     
     def get_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
         """Get operator-wise sales, orders, and ROAS data"""
         store_filter = ""
         if store_ids:
-            store_ids_str = "', '".join(store_ids)
-            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
         
-        query = f"""
+        query = """
         WITH operator_data AS (
           SELECT 
             STORE_ID,
@@ -146,7 +156,7 @@ class BigQueryClient:
             AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
             COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
             COUNT(*) as total_records
-          FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
           WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
             AND SALES IS NOT NULL
             AND SALES != 'null'
@@ -162,7 +172,12 @@ class BigQueryClient:
           od.total_records
         FROM operator_data od
         ORDER BY od.total_sales DESC
-        """
+        """.format(
+            project_id=self.project_id,
+            start_date=start_date,
+            end_date=end_date,
+            store_filter=store_filter
+        )
         return self.execute_query(query)
     
     def get_operator_aggregated_data(self, start_date: str, end_date: str, operator_store_mapping: dict) -> pd.DataFrame:
@@ -172,33 +187,42 @@ class BigQueryClient:
         for operator_name, store_ids in operator_store_mapping.items():
             if not store_ids:
                 continue
+            
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if not valid_store_ids:
+                continue
                 
-            store_ids_str = "', '".join(store_ids)
+            # Properly format store IDs for SQL IN clause
+            store_ids_str = "', '".join(valid_store_ids)
             store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
             
-            # Escape single quotes in operator name for SQL
-            escaped_operator_name = operator_name.replace("'", "''")
-            
-            query = f"""
+            # Use string formatting to avoid f-string issues with curly braces
+            query = """
             SELECT 
-              '{escaped_operator_name}' as operator_name,
               SUM(CAST(SALES AS FLOAT64)) as total_sales,
               SUM(CAST(ORDERS AS INT64)) as total_orders,
               AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
               COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns,
               COUNT(*) as total_records
-            FROM `{self.project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
+            FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
             WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
               AND SALES IS NOT NULL
               AND SALES != 'null'
               {store_filter}
-            """
+            """.format(
+                project_id=self.project_id,
+                start_date=start_date,
+                end_date=end_date,
+                store_filter=store_filter
+            )
             
             result = self.execute_query(query)
             if not result.empty:
-                # Add store_count with the actual number of stores from our mapping
+                # Add operator name and store_count to the result
                 result_dict = result.iloc[0].to_dict()
-                result_dict['store_count'] = len(store_ids)
+                result_dict['operator_name'] = operator_name
+                result_dict['store_count'] = len(valid_store_ids)
                 all_results.append(result_dict)
         
         if all_results:

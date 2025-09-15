@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from dotenv import load_dotenv
 
 # Load environment variables from slack.env
@@ -18,11 +18,7 @@ load_dotenv('slack.env')
 # Import custom modules
 from bigquery_utils import BigQueryClient
 from slack_utils import SlackNotifier
-from cache_utils import (
-    dashboard_cache, get_cache_key_for_dashboard, save_dashboard_view, load_dashboard_view,
-    save_kpi_data, load_kpi_data, save_operator_data, load_operator_data,
-    save_store_data, load_store_data, save_campaign_data, load_campaign_data
-)
+# Cache functionality removed
 import pandas as pd
 
 # Page configuration
@@ -30,7 +26,7 @@ st.set_page_config(
     page_title="Daily Dashboard - TODC Marketing Analytics",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Force light mode
@@ -556,6 +552,33 @@ def get_operators_with_store_ids():
         st.error(f"Error loading operators data: {e}")
         return {}
 
+def get_target_operators_store_ids():
+    """Get store IDs for the 5 target operators"""
+    # Hardcoded store IDs for the 5 target operators
+    target_store_ids = [
+        # Bear Family Restaurants MCD (30 stores)
+        '24207786', '655940', '653706', '2664487', '654860', '2664473', '2663940', '659372', '656282', '653975',
+        '655936', '655573', '653819', '653877', '656986', '656600', '24207864', '656284', '655954', '24207837',
+        '2650292', '655292', '2667097', '2667134', '2667151', '654732', '23450401', '23450614', '656317', '659264',
+        
+        # QSR Executive Enterprises (24 stores)
+        '2122176', '1170166', '2108398', '24590418', '23000258', '2297296', '23000201', '23000171', '1170194', '23000270',
+        '24590476', '2110096', '24507497', '685609', '23015471', '24508024', '2110005', '701236', '23000234', '23000231',
+        '694592', '2110169', '23000302', '686933',
+        
+        # Upchurch Management (31 stores)
+        '684427', '677517', '685073', '685633', '680386', '680368', '687543', '684468', '685069', '684472',
+        '684918', '687850', '684457', '684443', '684429', '684444', '688121', '680307', '684491', '686273',
+        '684476', '680384', '680392', '684559', '680394', '684906', '684917', '684904', '684455', '684546', '685071',
+        
+        # Bican Family Restaurants Inc (3 stores)
+        '655822', '655827', '655825',
+        
+        # JKK Enterprises (4 stores)
+        '687357', '687002', '23987538', '686331'
+    ]
+    return target_store_ids
+
 @st.cache_data
 def get_store_data_for_operator(operator_name: str, start_date: str, end_date: str):
     """Get store-level data for a specific operator"""
@@ -613,6 +636,24 @@ if 'selected_operator' not in st.session_state:
 if 'selected_store' not in st.session_state:
     st.session_state.selected_store = None
 
+# Cache for loaded data to avoid reloading
+if 'kpi_data_loaded' not in st.session_state:
+    st.session_state.kpi_data_loaded = False
+if 'pop_data' not in st.session_state:
+    st.session_state.pop_data = {}
+if 'mom_data' not in st.session_state:
+    st.session_state.mom_data = {}
+if 'operator_data_loaded' not in st.session_state:
+    st.session_state.operator_data_loaded = False
+if 'operator_summary_data' not in st.session_state:
+    st.session_state.operator_summary_data = pd.DataFrame()
+if 'store_breakdown_data' not in st.session_state:
+    st.session_state.store_breakdown_data = pd.DataFrame()
+if 'current_platform' not in st.session_state:
+    st.session_state.current_platform = 'doordash'
+if 'current_date_range' not in st.session_state:
+    st.session_state.current_date_range = None
+
 def initialize_clients():
     """Initialize BigQuery and Slack clients"""
     # BigQuery client
@@ -627,6 +668,68 @@ def initialize_clients():
     slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
     if slack_webhook:
         st.session_state.slack_notifier = SlackNotifier(webhook_url=slack_webhook)
+
+def should_reload_data(platform: str, start_date: str, end_date: str) -> bool:
+    """Check if data needs to be reloaded based on platform or date changes"""
+    current_range = f"{start_date}_{end_date}"
+    
+    # Reload if platform changed
+    if st.session_state.current_platform != platform:
+        return True
+    
+    # Reload if date range changed
+    if st.session_state.current_date_range != current_range:
+        return True
+    
+    return False
+
+def load_kpi_data_if_needed(platform: str, start_date: str, end_date: str, store_ids: list):
+    """Load KPI data only if needed"""
+    if not st.session_state.kpi_data_loaded or should_reload_data(platform, start_date, end_date):
+        with st.spinner("Loading KPI data..."):
+            # Load PoP data
+            pop_result = load_kpi_data_individual(start_date, end_date, platform, store_ids)
+            st.session_state.pop_data = pop_result['pop_data']
+            
+            # Load MoM data
+            mom_result = load_mom_data_individual(platform)
+            st.session_state.mom_data = mom_result['mom_data']
+            
+            st.session_state.kpi_data_loaded = True
+            st.session_state.current_platform = platform
+            st.session_state.current_date_range = f"{start_date}_{end_date}"
+
+def load_operator_data_if_needed(platform: str, start_date: str, end_date: str, store_ids: list):
+    """Load operator data only if needed"""
+    if not st.session_state.operator_data_loaded or should_reload_data(platform, start_date, end_date):
+        with st.spinner("Loading operator data..."):
+            # Get operator data for the 5 target operators
+            target_operators_data = get_operators_with_store_ids()
+            target_operator_names = [
+                "Bear Family Restaurants MCD",
+                "QSR Executive Enterprises", 
+                "Upchurch Management",
+                "Bican Family Restaurants Inc",
+                "JKK Enterprises"
+            ]
+            filtered_operators_data = {k: v for k, v in target_operators_data.items() if k in target_operator_names}
+            
+            if platform == "ubereats":
+                st.session_state.operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
+                    start_date, end_date, filtered_operators_data
+                )
+                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
+                    start_date, end_date, store_ids
+                )
+            else:
+                st.session_state.operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
+                    start_date, end_date, filtered_operators_data
+                )
+                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
+                    start_date, end_date, store_ids
+                )
+            
+            st.session_state.operator_data_loaded = True
 
 def format_currency(value) -> str:
     """Format currency values"""
@@ -738,31 +841,20 @@ def render_sidebar():
                 st.session_state.selected_platform = "ubereats"
                 st.rerun()
         
-        # Operators Filter - Load from CSV (moved above date range)
-        st.subheader("Operators")
-        business_names = load_business_names()
+        # Selected Operators (Fixed - No Filter)
+        st.subheader("Selected Operators")
+        target_operators = [
+            "Bear Family Restaurants MCD",
+            "QSR Executive Enterprises", 
+            "Upchurch Management",  # Display name matches processed data
+            "Bican Family Restaurants Inc",
+            "JKK Enterprises"
+        ]
         
-        # Add "All" option at the beginning
-        operator_options = ["All"] + business_names
+        for operator in target_operators:
+            st.write(f"✅ {operator}")
         
-        # Show count of available operators
-        st.caption(f"📊 {len(business_names)} operators available")
-        
-        operators = st.multiselect(
-            "Select Operators",
-            operator_options,
-            default=["All"]
-        )
-        
-        # Show store IDs being filtered (if any specific operators selected)
-        if operators and "All" not in operators:
-            store_ids = get_store_ids_for_operators(operators)
-            if store_ids:
-                st.caption(f"🏪 Filtering by {len(store_ids)} store IDs")
-            else:
-                st.caption("⚠️ No store IDs found for selected operators")
-        elif "All" in operators:
-            st.caption("🌐 Showing data for all operators (no filtering)")
+        st.caption(f"🏪 Total: 92 stores across 5 operators")
         
         # Date Range Selection
         st.subheader("Date Range")
@@ -783,53 +875,57 @@ def render_sidebar():
                     max_value=date.today() - timedelta(days=2)
                 )
         else:
-            # Default to last 7 days for better data visibility
-            start_date = date.today() - timedelta(days=9)  # Start 9 days ago
-            end_date = date.today() - timedelta(days=2)    # End 2 days ago (7-day range)
+            # Default to latest available data (2025-09-10) since BigQuery data is 3 days behind
+            start_date = date(2025, 9, 10)  # Latest available data
+            end_date = date(2025, 9, 10)    # Single day
         
         # Refresh Button
         if st.button("🔄 Refresh Data", type="primary"):
             st.rerun()
         
         # Slack Integration Status (simplified)
-        st.subheader("Slack Integration")
-        if st.session_state.slack_notifier:
-            st.success("✅ Slack Connected")
-        else:
-            st.warning("⚠️ Slack not configured")
+        # st.subheader("Slack Integration")
+        # if st.session_state.slack_notifier:
+        #     st.success("✅ Slack Connected")
+        # else:
+        #     st.warning("⚠️ Slack not configured")
         
-        # Cache Management
-        st.subheader("Cache Management")
         
-        # Show cache stats
-        cache_stats = dashboard_cache.get_session_stats()
-        if 'error' not in cache_stats:
-            st.caption(f"📁 {cache_stats['file_count']} cached views ({cache_stats['total_size'] / 1024:.1f} KB)")
-        
-        # Cache management buttons
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🗑️ Clear Cache", help="Clear current session cache"):
-                dashboard_cache.clear_session_cache()
-                st.rerun()
-        
-        with col2:
-            if st.button("🧹 Clean Old", help="Clean old session caches"):
-                dashboard_cache.clear_old_sessions()
-                st.success("Old caches cleaned!")
-        
-        return start_date, end_date, operators
+        return start_date, end_date, target_operators
 
-def render_kpi_widgets(pop_data: Dict, mom_data: Dict, yoy_data: Dict):
-    """Render KPI widgets for PoP, MoM, and YoY"""
+def load_kpi_data_individual(start_date_str: str, end_date_str: str, platform: str, store_ids: list) -> Dict[str, Any]:
+    """Load KPI data individually"""
+    try:
+        pop_data = st.session_state.bigquery_client.get_pop_data(
+            start_date_str, end_date_str, platform, store_ids
+        )
+        return {'pop_data': pop_data, 'error': None}
+    except Exception as e:
+        return {'pop_data': {}, 'error': str(e)}
+
+def load_mom_data_individual(platform: str) -> Dict[str, Any]:
+    """Load MoM data individually"""
+    try:
+        mom_data = st.session_state.bigquery_client.get_mom_data(platform)
+        return {'mom_data': mom_data, 'error': None}
+    except Exception as e:
+        return {'mom_data': {}, 'error': str(e)}
+
+# YoY functionality removed
+
+def render_kpi_widgets(pop_data: Dict, mom_data: Dict, 
+                      pop_loading: bool = False, mom_loading: bool = False):
+    """Render KPI widgets for PoP and MoM with individual loading states"""
     st.subheader("📈 Key Performance Indicators")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("### Period over Period")
-        if pop_data:
+        if pop_loading:
+            with st.spinner("Loading PoP data..."):
+                pass
+        elif pop_data:
             current_sales = pop_data.get('current_sales', 0)
             delta_pct = pop_data.get('sales_delta_percent', 0)
             create_metric_card(
@@ -843,7 +939,10 @@ def render_kpi_widgets(pop_data: Dict, mom_data: Dict, yoy_data: Dict):
     
     with col2:
         st.markdown("### Month over Month")
-        if mom_data:
+        if mom_loading:
+            with st.spinner("Loading MoM data..."):
+                pass
+        elif mom_data:
             current_sales = mom_data.get('current_month_sales', 0)
             delta_pct = mom_data.get('mom_sales_delta_percent', 0)
             create_metric_card(
@@ -855,19 +954,6 @@ def render_kpi_widgets(pop_data: Dict, mom_data: Dict, yoy_data: Dict):
         else:
             create_metric_card("Sales", "$0.00", "No Data", "vs Last Month")
     
-    with col3:
-        st.markdown("### Year over Year")
-        if yoy_data:
-            current_sales = yoy_data.get('current_year_sales', 0)
-            delta_pct = yoy_data.get('yoy_sales_delta_percent', 0)
-            create_metric_card(
-                "Sales",
-                format_currency(current_sales),
-                format_percentage(delta_pct),
-                f"vs Last Year"
-            )
-        else:
-            create_metric_card("Sales", "$0.00", "No Data", "vs Last Year")
 
 def render_trend_chart(trend_data: pd.DataFrame):
     """Render daily sales trend chart"""
@@ -908,8 +994,14 @@ def render_trend_chart(trend_data: pd.DataFrame):
     
     st.plotly_chart(fig, use_container_width=True)
 
-def render_operator_summary_table(operator_data: pd.DataFrame):
-    """Render operator summary table with aggregated data"""
+def render_operator_summary_table(operator_data: pd.DataFrame, loading: bool = False):
+    """Render operator summary table with aggregated data and loading state"""
+    if loading:
+        st.subheader("🏢 Operator Performance Summary")
+        with st.spinner("Loading operator data..."):
+            pass
+        return
+    
     if operator_data.empty:
         st.warning("No operator data available")
         # Add debug information
@@ -933,14 +1025,13 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
     display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
     display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{safe_float(x):.2f}x" if safe_float(x) != 0.0 else "N/A")
     display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{safe_int(x):,}")
-    display_data['store_count'] = display_data['store_count'].apply(lambda x: f"{safe_int(x)}")
-    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{safe_int(x)}")
-    
+    display_data['pop_sales_delta_percent'] = display_data['pop_sales_delta_percent'].apply(lambda x: f"{safe_float(x):+.1f}%")
+    display_data['mom_sales_delta_percent'] = display_data['mom_sales_delta_percent'].apply(lambda x: f"{safe_float(x):+.1f}%")
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
     
-    # Reorder columns for better display
-    column_order = ['rank', 'operator_name', 'total_sales', 'total_orders', 'avg_roas', 'store_count', 'total_campaigns']
+    # Reorder columns for better display (added PoP and MoM columns)
+    column_order = ['rank', 'operator_name', 'total_sales', 'total_orders', 'avg_roas', 'pop_sales_delta_percent', 'mom_sales_delta_percent']
     display_data = display_data[column_order]
     
     # Create clickable rows for drilldown
@@ -952,8 +1043,8 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
             "total_sales": st.column_config.TextColumn("Total Sales", width="medium"),
             "total_orders": st.column_config.TextColumn("Total Orders", width="medium"),
             "avg_roas": st.column_config.TextColumn("Avg ROAS", width="small"),
-            "store_count": st.column_config.TextColumn("Stores", width="small"),
-            "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
+            "pop_sales_delta_percent": st.column_config.TextColumn("PoP %", width="small"),
+            "mom_sales_delta_percent": st.column_config.TextColumn("MoM %", width="small"),
         },
         use_container_width=True,
         hide_index=True
@@ -973,10 +1064,16 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
         st.session_state.selected_store = None  # Reset store selection
         
         st.success(f"🔍 Selected operator: **{selected_operator}** - Loading store details...")
-        st.rerun()
+        # Don't call st.rerun() - let the main function handle the display
 
-def render_store_wise_breakdown(store_data: pd.DataFrame):
-    """Render store-wise breakdown table"""
+def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False):
+    """Render store-wise breakdown table with loading state"""
+    if loading:
+        st.subheader("🏪 Store-wise Performance Breakdown")
+        with st.spinner("Loading store data..."):
+            pass
+        return
+    
     if store_data.empty:
         st.warning("No store data available")
         return
@@ -988,13 +1085,13 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
     display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
     display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{safe_float(x):.2f}x" if safe_float(x) != 0.0 else "N/A")
     display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{safe_int(x):,}")
-    display_data['total_campaigns'] = display_data['total_campaigns'].apply(lambda x: f"{safe_int(x)}")
-    
+    display_data['pop_sales_delta_percent'] = display_data['pop_sales_delta_percent'].apply(lambda x: f"{safe_float(x):+.1f}%")
+    display_data['mom_sales_delta_percent'] = display_data['mom_sales_delta_percent'].apply(lambda x: f"{safe_float(x):+.1f}%")
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
     
-    # Reorder columns for better display (removed operator_name since we're filtering by selected operators)
-    column_order = ['rank', 'STORE_ID', 'STORE_NAME', 'total_sales', 'total_orders', 'avg_roas', 'total_campaigns']
+    # Reorder columns for better display (added PoP and MoM columns)
+    column_order = ['rank', 'STORE_ID', 'STORE_NAME', 'total_sales', 'total_orders', 'avg_roas', 'pop_sales_delta_percent', 'mom_sales_delta_percent']
     display_data = display_data[column_order]
     
     # Create clickable rows for drilldown
@@ -1007,7 +1104,8 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
             "total_sales": st.column_config.TextColumn("Total Sales", width="medium"),
             "total_orders": st.column_config.TextColumn("Total Orders", width="medium"),
             "avg_roas": st.column_config.TextColumn("Avg ROAS", width="small"),
-            "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
+            "pop_sales_delta_percent": st.column_config.TextColumn("PoP %", width="small"),
+            "mom_sales_delta_percent": st.column_config.TextColumn("MoM %", width="small"),
         },
         use_container_width=True,
         hide_index=True
@@ -1040,7 +1138,7 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
         st.session_state.selected_store = selected_store_id
         
         st.success(f"🔍 Selected store: **{selected_store_display}** - Loading campaign details...")
-        st.rerun()
+        # Don't call st.rerun() - let the main function handle the display
 
 def render_campaign_breakdown(campaign_data: pd.DataFrame):
     """Render campaign-level breakdown table"""
@@ -1052,6 +1150,18 @@ def render_campaign_breakdown(campaign_data: pd.DataFrame):
     
     # Format the data for display
     display_data = campaign_data.copy()
+    
+    # Format PoP and MoM columns if they exist
+    if 'pop_sales_delta_percent' in display_data.columns:
+        display_data['pop_sales_delta_percent'] = display_data['pop_sales_delta_percent'].apply(
+            lambda x: f"{safe_float(x):+.1f}%" if safe_float(x) != 0.0 else "N/A"
+        )
+    if 'mom_sales_delta_percent' in display_data.columns:
+        display_data['mom_sales_delta_percent'] = display_data['mom_sales_delta_percent'].apply(
+            lambda x: f"{safe_float(x):+.1f}%" if safe_float(x) != 0.0 else "N/A"
+        )
+    
+    # Format other columns
     if 'total_sales' in display_data.columns:
         display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
     if 'avg_roas' in display_data.columns:
@@ -1062,37 +1172,51 @@ def render_campaign_breakdown(campaign_data: pd.DataFrame):
     # Add performance ranking
     display_data['rank'] = range(1, len(display_data) + 1)
     
+    # Define column order: PoP, MoM before sales, orders, Avg. ROAS
+    column_order = ['rank', 'CAMPAIGN_NAME', 'STORE_NAME']
+    
+    # Add PoP and MoM columns if they exist
+    if 'pop_sales_delta_percent' in display_data.columns:
+        column_order.append('pop_sales_delta_percent')
+    if 'mom_sales_delta_percent' in display_data.columns:
+        column_order.append('mom_sales_delta_percent')
+    
+    # Add other columns
+    column_order.extend(['total_sales', 'total_orders', 'avg_roas', 'campaign_days'])
+    
+    # Reorder columns
+    display_data = display_data[column_order]
+    
+    # Define column configuration
+    column_config = {
+        'rank': st.column_config.NumberColumn('Rank', width='small'),
+        'CAMPAIGN_NAME': st.column_config.TextColumn('Campaign Name', width='medium'),
+        'STORE_NAME': st.column_config.TextColumn('Store Name', width='medium'),
+        'total_sales': st.column_config.TextColumn('Total Sales', width='medium'),
+        'total_orders': st.column_config.TextColumn('Total Orders', width='medium'),
+        'avg_roas': st.column_config.TextColumn('Avg. ROAS', width='medium'),
+        'campaign_days': st.column_config.NumberColumn('Days', width='small')
+    }
+    
+    # Add PoP and MoM column configs if they exist
+    if 'pop_sales_delta_percent' in display_data.columns:
+        column_config['pop_sales_delta_percent'] = st.column_config.TextColumn('PoP %', width='small')
+    if 'mom_sales_delta_percent' in display_data.columns:
+        column_config['mom_sales_delta_percent'] = st.column_config.TextColumn('MoM %', width='small')
+    
     st.dataframe(
         display_data,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        column_config=column_config
     )
 
 def render_drilldown_navigation():
     """Render navigation buttons for drilldown levels"""
-    col1, col2, col3 = st.columns([1, 1, 1])
-    
-    with col1:
-        if st.button("🏠 Back to Operators", disabled=st.session_state.drilldown_level == "operator"):
-            st.session_state.drilldown_level = "operator"
-            st.session_state.selected_operator = None
-            st.session_state.selected_store = None
-            st.rerun()
-    
-    with col2:
-        if st.button("🏪 Back to Stores", disabled=st.session_state.drilldown_level in ["operator", "store"]):
-            st.session_state.drilldown_level = "store"
-            st.session_state.selected_store = None
-            st.rerun()
-    
-    with col3:
-        if st.button("🔄 Reset View"):
-            st.session_state.drilldown_level = "operator"
-            st.session_state.selected_operator = None
-            st.session_state.selected_store = None
-            st.rerun()
+    # Navigation buttons removed as requested
+    pass
 
-def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, yoy_data: Dict, start_date_str: str, end_date_str: str):
+def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, start_date_str: str, end_date_str: str):
     """Send dashboard summary to Slack on load"""
     if not st.session_state.slack_notifier:
         return
@@ -1132,13 +1256,7 @@ def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, yoy_data: Dic
                         'Sales Change (MoM)': mom_data.get('mom_sales_delta_percent', 0)
                     })
                 
-                # Add YoY metrics
-                if yoy_data:
-                    summary_data['metrics'].update({
-                        'Current Year Sales (YoY)': yoy_data.get('current_year_sales', 0),
-                        'Previous Year Sales (YoY)': yoy_data.get('prev_year_sales', 0),
-                        'Sales Change (YoY)': yoy_data.get('yoy_sales_delta_percent', 0)
-                    })
+                # YoY metrics removed
                 
                 # Send summary to Slack
                 channel = os.getenv('SLACK_CHANNEL', '#alerts')
@@ -1161,14 +1279,105 @@ def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, yoy_data: Dic
         # Show that summary was already sent today
         st.info("ℹ️ Dashboard summary already sent to Slack today")
 
+def send_operator_alert(operator_name: str, store_data: pd.DataFrame):
+    """Send alert for stores with less than 5% PoP"""
+    if not st.session_state.slack_notifier or store_data.empty:
+        return
+    
+    # Filter stores with less than 5% PoP
+    low_performing_stores = store_data[
+        (store_data['pop_sales_delta_percent'] < 5) & 
+        (store_data['pop_sales_delta_percent'] != 0)
+    ]
+    
+    if low_performing_stores.empty:
+        return
+    
+    try:
+        platform_name = st.session_state.selected_platform.title()
+        platform_emoji = "🚚" if st.session_state.selected_platform == "doordash" else "🍔"
+        
+        store_names = low_performing_stores['STORE_NAME'].tolist()
+        store_count = len(store_names)
+        
+        message = f"""
+⚠️ *Alert: Stores with Low PoP Performance*
+{platform_emoji} *Platform:* {platform_name}
+🏢 *Operator:* {operator_name}
+📊 *Stores with <5% PoP:* {store_count}
+
+🏪 *Store Names:*
+{chr(10).join([f"• {name}" for name in store_names])}
+
+📈 *Action Required:* Review these stores for performance optimization
+        """.strip()
+        
+        success = st.session_state.slack_notifier.send_alert(
+            channel="#marketing-analytics",
+            message=message
+        )
+        
+        if success:
+            st.success(f"✅ Alert sent for {store_count} low-performing stores!")
+        
+    except Exception as e:
+        st.error(f"Error sending operator alert: {e}")
+
+def send_store_alert(store_name: str, campaign_data: pd.DataFrame):
+    """Send alert for campaigns with less than 5% PoP"""
+    if not st.session_state.slack_notifier or campaign_data.empty:
+        return
+    
+    # Filter campaigns with less than 5% PoP
+    low_performing_campaigns = campaign_data[
+        (campaign_data['pop_sales_delta_percent'] < 5) & 
+        (campaign_data['pop_sales_delta_percent'] != 0)
+    ]
+    
+    if low_performing_campaigns.empty:
+        return
+    
+    try:
+        platform_name = st.session_state.selected_platform.title()
+        platform_emoji = "🚚" if st.session_state.selected_platform == "doordash" else "🍔"
+        
+        campaign_names = low_performing_campaigns['CAMPAIGN_NAME'].tolist()
+        campaign_count = len(campaign_names)
+        
+        message = f"""
+⚠️ *Alert: Campaigns with Low PoP Performance*
+{platform_emoji} *Platform:* {platform_name}
+🏪 *Store:* {store_name}
+📊 *Campaigns with <5% PoP:* {campaign_count}
+
+🎯 *Campaign Names:*
+{chr(10).join([f"• {name}" for name in campaign_names])}
+
+📈 *Action Required:* Review these campaigns for performance optimization
+        """.strip()
+        
+        success = st.session_state.slack_notifier.send_alert(
+            channel="#marketing-analytics",
+            message=message
+        )
+        
+        if success:
+            st.success(f"✅ Alert sent for {campaign_count} low-performing campaigns!")
+        
+    except Exception as e:
+        st.error(f"Error sending store alert: {e}")
+
 
 def main():
-    """Main application function"""
+    """Main application function with efficient data loading"""
     # Initialize clients
     initialize_clients()
     
-    # Header
-    st.title("📊 Daily Dashboard - TODC Marketing Analytics")
+    # Header with dynamic platform indicator
+    platform_name = st.session_state.selected_platform.title()
+    platform_emoji = "🚚" if st.session_state.selected_platform == "doordash" else "🍔"
+    st.title(f"📊 Daily Dashboard - TODC Marketing Analytics")
+    st.header(f"{platform_emoji} {platform_name} Data")
     
     # Render sidebar and get filters
     start_date, end_date, operators = render_sidebar()
@@ -1182,143 +1391,79 @@ def main():
     start_date_str = start_date.strftime("%Y-%m-%d")
     end_date_str = end_date.strftime("%Y-%m-%d")
     
-    # Get store IDs for selected operators
-    store_ids = get_store_ids_for_operators(operators)
+    # Get store IDs for the 5 target operators
+    store_ids = get_target_operators_store_ids()
     
-    # Generate cache key for current dashboard state
-    cache_key = get_cache_key_for_dashboard(
-        platform=st.session_state.selected_platform,
-        start_date=start_date_str,
-        end_date=end_date_str,
-        operators=operators,
-        drilldown_level=st.session_state.drilldown_level,
-        selected_operator=st.session_state.selected_operator,
-        selected_store=st.session_state.selected_store
-    )
+    # Load KPI data only if needed (platform or date changed)
+    load_kpi_data_if_needed(st.session_state.selected_platform, start_date_str, end_date_str, store_ids)
     
-    # Check if we have cached data for this exact state
-    cached_data = load_dashboard_view(cache_key)
-    
-    if cached_data:
-        # Use cached data
-        st.info("📁 Loading from cache...")
-        pop_data = cached_data.get('pop_data', {})
-        mom_data = cached_data.get('mom_data', {})
-        yoy_data = cached_data.get('yoy_data', {})
-        operator_summary_data = cached_data.get('operator_summary_data', pd.DataFrame())
-        store_breakdown_data = cached_data.get('store_breakdown_data', pd.DataFrame())
-        campaigns_data = cached_data.get('campaigns_data', pd.DataFrame())
-    else:
-        # Load data with progress indicators
-        with st.spinner("Loading data from BigQuery..."):
-            # Fetch KPI data
-            pop_data = st.session_state.bigquery_client.get_pop_data(
-                start_date_str, end_date_str, st.session_state.selected_platform, store_ids
-            )
-            mom_data = st.session_state.bigquery_client.get_mom_data(st.session_state.selected_platform)
-            yoy_data = st.session_state.bigquery_client.get_yoy_data(st.session_state.selected_platform)
-        
-            # Get operator data based on selection
-            if "All" in operators:
-                # Get all operators and their store IDs
-                all_operators_data = get_operators_with_store_ids()
-                if st.session_state.selected_platform == "ubereats":
-                    operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
-                        start_date_str, end_date_str, all_operators_data
-                    )
-                else:
-                    operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                        start_date_str, end_date_str, all_operators_data
-                    )
-                store_breakdown_data = pd.DataFrame()  # No store breakdown for "All"
-            else:
-                # Get data for selected operators only
-                selected_operators_data = get_operators_with_store_ids()
-                filtered_operators_data = {k: v for k, v in selected_operators_data.items() if k in operators}
-                
-                if st.session_state.selected_platform == "ubereats":
-                    operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
-                        start_date_str, end_date_str, filtered_operators_data
-                    )
-                else:
-                    operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                        start_date_str, end_date_str, filtered_operators_data
-                    )
-                
-                # Get store-wise breakdown for selected operators
-                if st.session_state.selected_platform == "ubereats":
-                    store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
-                        start_date_str, end_date_str, store_ids
-                    )
-                else:
-                    store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
-                        start_date_str, end_date_str, store_ids
-                    )
-            
-            # Fetch additional data (reduced for faster loading)
-            if st.session_state.selected_platform == "ubereats":
-                campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns(7, store_ids)  # Only last 7 days initially
-            else:
-                campaigns_data = st.session_state.bigquery_client.get_top_campaigns(7, store_ids)  # Only last 7 days initially
-            
-            # Save data to cache
-            dashboard_data = {
-                'pop_data': pop_data,
-                'mom_data': mom_data,
-                'yoy_data': yoy_data,
-                'operator_summary_data': operator_summary_data,
-                'store_breakdown_data': store_breakdown_data,
-                'campaigns_data': campaigns_data
-            }
-            save_dashboard_view(dashboard_data, cache_key)
-            st.success("💾 Data cached for faster future access!")
-    
-    # Send dashboard summary to Slack on load
-    send_dashboard_summary_on_load(pop_data, mom_data, yoy_data, start_date_str, end_date_str)
-    
-    # Render KPI widgets
-    render_kpi_widgets(pop_data, mom_data, yoy_data)
-    
-    # Add some spacing
-    st.markdown("---")
+    # Always render KPI widgets (data is cached in session state)
+    render_kpi_widgets(st.session_state.pop_data, st.session_state.mom_data, pop_loading=False, mom_loading=False)
     
     # Render drilldown navigation
     render_drilldown_navigation()
     
-    # Handle drilldown levels
-    if st.session_state.drilldown_level == "operator":
-        # Render operator summary table
-        render_operator_summary_table(operator_summary_data)
+    # Load operator data only if needed
+    load_operator_data_if_needed(st.session_state.selected_platform, start_date_str, end_date_str, store_ids)
+    
+    # Always render operator table (data is cached in session state)
+    render_operator_summary_table(st.session_state.operator_summary_data, loading=False)
+    
+    # Handle drilldown sections - only load when needed
+    target_operators_data = get_operators_with_store_ids()
+    
+    # Show store breakdown if an operator is selected
+    if st.session_state.drilldown_level in ["store", "campaign"] and st.session_state.selected_operator:
+        selected_operator_stores = target_operators_data.get(st.session_state.selected_operator, [])
         
-        # Show store-wise breakdown only if specific operators are selected (not "All")
-        if not store_breakdown_data.empty:
-            # Add some spacing
-            st.markdown("---")
-            render_store_wise_breakdown(store_breakdown_data)
+        if selected_operator_stores:
+            # Load store data for the selected operator's stores only
+            if st.session_state.selected_platform == "ubereats":
+                selected_operator_store_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
+                    start_date_str, end_date_str, selected_operator_stores
+                )
+            else:
+                selected_operator_store_data = st.session_state.bigquery_client.get_operator_wise_data(
+                    start_date_str, end_date_str, selected_operator_stores
+                )
+            
+            # Only show warning if no data found
+            if selected_operator_store_data.empty:
+                st.warning("⚠️ **No data found for these store IDs on this date.**")
+                st.warning("**Possible causes:**")
+                st.warning("• Store IDs don't exist in BigQuery table")
+                st.warning("• No campaign data for these stores")
+                st.warning("• Data sync issues between CSV and BigQuery")
+                st.info(f"**Latest available data:** 2025-09-10")
+                st.info(f"**Dashboard date:** {start_date_str}")
+            else:
+                # Send alert for stores with low PoP performance
+                send_operator_alert(st.session_state.selected_operator, selected_operator_store_data)
+            
+            render_store_wise_breakdown(selected_operator_store_data, loading=False)
+        else:
+            st.warning(f"No stores found for operator: {st.session_state.selected_operator}")
     
-    elif st.session_state.drilldown_level == "store" and st.session_state.selected_operator:
-        # Show store-level data for selected operator
-        st.subheader(f"🏪 Store Performance - {st.session_state.selected_operator}")
-        store_data = get_store_data_for_operator(
-            st.session_state.selected_operator, start_date_str, end_date_str
-        )
-        render_store_wise_breakdown(store_data)
+    # Show campaign breakdown if a store is selected
+    if st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
+        # Load campaign data for the selected store
+        if st.session_state.selected_platform == "ubereats":
+            campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns(30, [st.session_state.selected_store])
+        else:
+            campaigns_data = st.session_state.bigquery_client.get_top_campaigns(30, [st.session_state.selected_store])
+        
+        # Send alert for campaigns with low PoP performance
+        if not campaigns_data.empty:
+            # Get store name from the campaign data
+            store_name = campaigns_data['STORE_NAME'].iloc[0] if 'STORE_NAME' in campaigns_data.columns else st.session_state.selected_store
+            send_store_alert(store_name, campaigns_data)
+        
+        render_campaign_breakdown(campaigns_data)
     
-    elif st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
-        # Show campaign-level data for selected store
-        st.subheader(f"📊 Campaign Performance - Store {st.session_state.selected_store}")
-        campaign_data = get_campaign_data_for_store(
-            st.session_state.selected_store, start_date_str, end_date_str
-        )
-        render_campaign_breakdown(campaign_data)
-    
-    # Add some spacing
-    st.markdown("---")
-    
-    
-    # Note: Slack alerts are now sent automatically on dashboard load
-    
-    # Footer removed as requested
+    # Send dashboard summary to Slack on load (only once per session)
+    if not st.session_state.get('slack_summary_sent', False):
+        send_dashboard_summary_on_load(st.session_state.pop_data, st.session_state.mom_data, start_date_str, end_date_str)
+        st.session_state.slack_summary_sent = True
 
 if __name__ == "__main__":
     main()

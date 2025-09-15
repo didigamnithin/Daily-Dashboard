@@ -237,6 +237,113 @@ class BigQueryClient:
         )
         return self.execute_query(query)
     
+    def get_ue_operator_wise_data_all_time(self, store_ids: list = None) -> pd.DataFrame:
+        """Get all available UberEats operator-wise data without date filters"""
+        store_filter = ""
+        if store_ids:
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        query = """
+        WITH all_data AS (
+          SELECT 
+            STORE_ID,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT CAMPAIGN_NAME) as total_campaigns
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+            {store_filter}
+          GROUP BY STORE_ID, STORE_NAME
+        )
+        SELECT 
+          STORE_ID,
+          STORE_NAME,
+          total_sales,
+          total_orders,
+          avg_roas,
+          total_campaigns,
+          0 as prev_sales,
+          0 as prev_orders,
+          0 as month_sales,
+          0 as month_orders,
+          0 as prev_month_sales,
+          0 as prev_month_orders,
+          0 as pop_sales_delta_percent,
+          0 as mom_sales_delta_percent
+        FROM all_data
+        ORDER BY total_sales DESC
+        """.format(
+            project_id=self.project_id,
+            store_filter=store_filter
+        )
+        try:
+            return self.execute_query(query)
+        except Exception as e:
+            print(f"Error in get_ue_operator_wise_data_all_time: {e}")
+            return pd.DataFrame()
+    
+    def get_ue_top_campaigns_all_time(self, store_ids: list = None) -> pd.DataFrame:
+        """Get all available UberEats campaign data without date filters"""
+        store_filter = ""
+        if store_ids:
+            # Filter out empty or invalid store IDs
+            valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
+            if valid_store_ids:
+                store_ids_str = "', '".join(valid_store_ids)
+                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        query = """
+        WITH all_campaigns AS (
+          SELECT 
+            CAMPAIGN_NAME,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(*) as campaign_days
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+            {store_filter}
+          GROUP BY CAMPAIGN_NAME, STORE_NAME
+        )
+        SELECT 
+          CAMPAIGN_NAME,
+          STORE_NAME,
+          total_sales,
+          total_orders,
+          avg_roas,
+          campaign_days,
+          0 as prev_sales,
+          0 as prev_orders,
+          0 as month_sales,
+          0 as month_orders,
+          0 as prev_month_sales,
+          0 as prev_month_orders,
+          0 as pop_sales_delta_percent,
+          0 as mom_sales_delta_percent
+        FROM all_campaigns
+        ORDER BY total_sales DESC
+        LIMIT 10
+        """.format(
+            project_id=self.project_id,
+            store_filter=store_filter
+        )
+        try:
+            return self.execute_query(query)
+        except Exception as e:
+            print(f"Error in get_ue_top_campaigns_all_time: {e}")
+            return pd.DataFrame()
+    
     def get_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
         """Get operator-wise sales, orders, and ROAS data with PoP and MoM calculations"""
         store_filter = ""

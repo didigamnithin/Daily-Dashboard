@@ -718,8 +718,8 @@ def load_operator_data_if_needed(platform: str, start_date: str, end_date: str, 
                 st.session_state.operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
                     start_date, end_date, filtered_operators_data
                 )
-                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
-                    start_date, end_date, store_ids
+                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data_all_time(
+                    store_ids
                 )
             else:
                 st.session_state.operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
@@ -1268,6 +1268,9 @@ def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, start_date_st
                     if success:
                         st.session_state[summary_key] = True
                         st.success("✅ Dashboard summary sent to Slack successfully!")
+                        
+                        # Now send operator performance alert
+                        send_operator_performance_alert_on_load()
                     else:
                         st.warning("⚠️ Failed to send dashboard summary to Slack")
                 else:
@@ -1367,6 +1370,54 @@ def send_store_alert(store_name: str, campaign_data: pd.DataFrame):
     except Exception as e:
         st.error(f"Error sending store alert: {e}")
 
+def send_operator_performance_alert_on_load():
+    """Send alert for operators with PoP less than 5% on dashboard load"""
+    if not st.session_state.slack_notifier or not st.session_state.operator_data_loaded:
+        return
+    
+    try:
+        # Get operator data from session state
+        operator_data = st.session_state.operator_summary_data
+        
+        if operator_data.empty:
+            return
+        
+        # Filter operators with PoP less than 5%
+        low_performing_operators = operator_data[
+            (operator_data['pop_sales_delta_percent'] < 5) & 
+            (operator_data['pop_sales_delta_percent'] != 0)
+        ]
+        
+        if low_performing_operators.empty:
+            return
+        
+        platform_name = st.session_state.selected_platform.title()
+        platform_emoji = "🚚" if st.session_state.selected_platform == "doordash" else "🍔"
+        
+        operator_count = len(low_performing_operators)
+        
+        message = f"""
+⚠️ *Alert: Operators with Low PoP Performance*
+{platform_emoji} *Platform:* {platform_name}
+📊 *Operators with <5% PoP:* {operator_count}
+
+🏢 *Operator Names:*
+{chr(10).join([f"• {row['operator_name']} ({row['pop_sales_delta_percent']:+.1f}%)" for _, row in low_performing_operators.iterrows()])}
+
+📈 *Action Required:* Review these operators for performance optimization
+        """.strip()
+        
+        success = st.session_state.slack_notifier.send_alert(
+            channel="#marketing-analytics",
+            message=message
+        )
+        
+        if success:
+            st.success(f"✅ Operator performance alert sent for {operator_count} low-performing operators!")
+        
+    except Exception as e:
+        st.error(f"Error sending operator performance alert: {e}")
+
 
 def main():
     """Main application function with efficient data loading"""
@@ -1419,8 +1470,9 @@ def main():
         if selected_operator_stores:
             # Load store data for the selected operator's stores only
             if st.session_state.selected_platform == "ubereats":
-                selected_operator_store_data = st.session_state.bigquery_client.get_ue_operator_wise_data(
-                    start_date_str, end_date_str, selected_operator_stores
+                # For UberEats, get all available data without date filters
+                selected_operator_store_data = st.session_state.bigquery_client.get_ue_operator_wise_data_all_time(
+                    selected_operator_stores
                 )
             else:
                 selected_operator_store_data = st.session_state.bigquery_client.get_operator_wise_data(
@@ -1429,13 +1481,22 @@ def main():
             
             # Only show warning if no data found
             if selected_operator_store_data.empty:
-                st.warning("⚠️ **No data found for these store IDs on this date.**")
-                st.warning("**Possible causes:**")
-                st.warning("• Store IDs don't exist in BigQuery table")
-                st.warning("• No campaign data for these stores")
-                st.warning("• Data sync issues between CSV and BigQuery")
-                st.info(f"**Latest available data:** 2025-09-10")
-                st.info(f"**Dashboard date:** {start_date_str}")
+                if st.session_state.selected_platform == "ubereats":
+                    st.warning("⚠️ **No UberEats data found for these store IDs.**")
+                    st.warning("**Possible causes:**")
+                    st.warning("• Store IDs don't exist in UberEats BigQuery table")
+                    st.warning("• No UberEats campaign data for these stores")
+                    st.warning("• UberEats table may be empty or inaccessible")
+                    st.info("**Note:** UberEats data is limited to historical periods")
+                    st.info("**Store IDs checked:** " + ", ".join(selected_operator_stores[:5]) + ("..." if len(selected_operator_stores) > 5 else ""))
+                else:
+                    st.warning("⚠️ **No data found for these store IDs on this date.**")
+                    st.warning("**Possible causes:**")
+                    st.warning("• Store IDs don't exist in BigQuery table")
+                    st.warning("• No campaign data for these stores")
+                    st.warning("• Data sync issues between CSV and BigQuery")
+                    st.info(f"**Latest available data:** 2025-09-10")
+                    st.info(f"**Dashboard date:** {start_date_str}")
             else:
                 # Send alert for stores with low PoP performance
                 send_operator_alert(st.session_state.selected_operator, selected_operator_store_data)
@@ -1448,7 +1509,8 @@ def main():
     if st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
         # Load campaign data for the selected store
         if st.session_state.selected_platform == "ubereats":
-            campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns(30, [st.session_state.selected_store])
+            # For UberEats, get all available campaign data without date filters
+            campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns_all_time([st.session_state.selected_store])
         else:
             campaigns_data = st.session_state.bigquery_client.get_top_campaigns(30, [st.session_state.selected_store])
         

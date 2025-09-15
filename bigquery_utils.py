@@ -282,19 +282,25 @@ class BigQueryClient:
         FROM selected_period, previous_period
         """
     
-    def _get_ue_pop_query(self) -> str:
+    def _get_ue_pop_query(self, store_ids: list = None) -> str:
         """Get UberEats PoP query"""
-        return """
+        store_filter = ""
+        if store_ids:
+            store_ids_str = "', '".join(store_ids)
+            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        return f"""
         WITH selected_period_ue AS (
           SELECT 
             SUM(CAST(REGEXP_REPLACE(SALES_USD, r'[$,]', '') AS FLOAT64)) as current_sales,
             COUNT(DISTINCT CAMPAIGN_UUID) as current_campaigns,
             SUM(CAST(ORDERS AS INT64)) as current_orders
           FROM `todc-marketing.merchant_portal_upload.ue_raw_offers_campaigns`
-          WHERE START_DATE <= '{end_date}' AND END_DATE >= '{start_date}'
+          WHERE START_DATE <= '{{end_date}}' AND END_DATE >= '{{start_date}}'
             AND SALES_USD IS NOT NULL
             AND SALES_USD != '$0'
             AND SALES_USD != 'null'
+            {store_filter}
         ),
         previous_period_ue AS (
           SELECT 
@@ -302,10 +308,11 @@ class BigQueryClient:
             COUNT(DISTINCT CAMPAIGN_UUID) as prev_campaigns,
             SUM(CAST(ORDERS AS INT64)) as prev_orders
           FROM `todc-marketing.merchant_portal_upload.ue_raw_offers_campaigns`
-          WHERE START_DATE <= '{prev_end_date}' AND END_DATE >= '{prev_start_date}'
+          WHERE START_DATE <= '{{prev_end_date}}' AND END_DATE >= '{{prev_start_date}}'
             AND SALES_USD IS NOT NULL
             AND SALES_USD != '$0'
             AND SALES_USD != 'null'
+            {store_filter}
         )
         SELECT 
           current_sales,

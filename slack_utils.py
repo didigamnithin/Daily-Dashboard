@@ -7,38 +7,31 @@ import os
 import json
 import requests
 from typing import Dict, Optional
+from datetime import datetime
 import streamlit as st
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 
 
 class SlackNotifier:
     """Slack notification handler for dashboard alerts"""
     
-    def __init__(self, bot_token: Optional[str] = None, webhook_url: Optional[str] = None):
-        """Initialize Slack client with bot token or webhook URL"""
-        self.bot_token = bot_token or os.getenv('SLACK_BOT_TOKEN')
+    def __init__(self, webhook_url: Optional[str] = None):
+        """Initialize Slack client with webhook URL"""
         self.webhook_url = webhook_url or os.getenv('SLACK_WEBHOOK_URL')
         
-        if self.bot_token:
-            self.client = WebClient(token=self.bot_token)
-            self.use_webhook = False
-        elif self.webhook_url:
+        if self.webhook_url:
             self.client = None
             self.use_webhook = True
         else:
             self.client = None
             self.use_webhook = False
-            st.warning("Neither Slack bot token nor webhook URL provided. Alerts will be disabled.")
+            st.warning("Slack webhook URL not provided. Alerts will be disabled.")
     
     def send_alert(self, channel: str, message: str, blocks: Optional[list] = None) -> bool:
-        """Send alert message to Slack channel"""
+        """Send alert message to Slack channel via webhook"""
         if self.use_webhook:
             return self._send_webhook_alert(message, blocks)
-        elif self.client:
-            return self._send_bot_alert(channel, message, blocks)
         else:
-            st.error("Slack not configured. Please provide bot token or webhook URL.")
+            st.error("Slack webhook not configured. Please provide webhook URL.")
             return False
     
     def _send_webhook_alert(self, message: str, blocks: Optional[list] = None) -> bool:
@@ -52,26 +45,20 @@ class SlackNotifier:
             response = requests.post(
                 self.webhook_url,
                 data=json.dumps(payload),
-                headers={'Content-Type': 'application/json'}
+                headers={'Content-Type': 'application/json'},
+                timeout=10
             )
             
-            return response.status_code == 200
+            if response.status_code == 200:
+                return True
+            else:
+                st.error(f"Webhook send failed with status code: {response.status_code}")
+                st.error(f"Response: {response.text}")
+                return False
         except Exception as e:
             st.error(f"Webhook error: {str(e)}")
             return False
     
-    def _send_bot_alert(self, channel: str, message: str, blocks: Optional[list] = None) -> bool:
-        """Send alert using bot token"""
-        try:
-            response = self.client.chat_postMessage(
-                channel=channel,
-                text=message,
-                blocks=blocks
-            )
-            return response["ok"]
-        except SlackApiError as e:
-            st.error(f"Slack API error: {e.response['error']}")
-            return False
     
     def send_sales_alert(self, channel: str, data: Dict, alert_type: str) -> bool:
         """Send formatted sales alert to Slack"""
@@ -156,60 +143,62 @@ class SlackNotifier:
         if not summary_data:
             return False
         
+        # Create a simple, compatible block structure
         blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": "🌅 Daily Dashboard Summary"
-                }
-            },
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Date:* {summary_data.get('date', 'Today')}\n*Platform:* {summary_data.get('platform', 'All')}"
+                    "text": f"🌅 *Daily Dashboard Summary*\n*Date:* {summary_data.get('date', 'Today')}\n*Platform:* {summary_data.get('platform', 'All')}\n*Date Range:* {summary_data.get('date_range', 'N/A')}"
                 }
             }
         ]
         
-        # Add metrics
+        # Add metrics in a simple format
         metrics = summary_data.get('metrics', {})
         if metrics:
-            fields = []
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    if 'sales' in key.lower():
-                        fields.append({
-                            "type": "mrkdwn",
-                            "text": f"*{key.replace('_', ' ').title()}:* ${value:,.2f}"
-                        })
-                    elif 'percent' in key.lower():
-                        fields.append({
-                            "type": "mrkdwn",
-                            "text": f"*{key.replace('_', ' ').title()}:* {value:+.1f}%"
-                        })
-                    else:
-                        fields.append({
-                            "type": "mrkdwn",
-                            "text": f"*{key.replace('_', ' ').title()}:* {value:,}"
-                        })
+            metrics_text = "\n".join([
+                f"*{key.replace('_', ' ').title()}:* {self._format_metric_value(key, value)}"
+                for key, value in metrics.items()
+                if isinstance(value, (int, float))
+            ])
             
-            if fields:
+            if metrics_text:
                 blocks.append({
                     "type": "section",
-                    "fields": fields
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📊 *Key Metrics:*\n{metrics_text}"
+                    }
                 })
         
-        message = f"Daily Dashboard Summary - {summary_data.get('date', 'Today')}"
+        # Add footer
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"📊 Dashboard accessed at {datetime.now().strftime('%H:%M:%S')} | 🚀 Application running successfully"
+                }
+            ]
+        })
+        
+        message = f"Daily Dashboard Summary - {summary_data.get('date', 'Today')} | Platform: {summary_data.get('platform', 'All')}"
         return self.send_alert(channel, message, blocks)
     
+    def _format_metric_value(self, key: str, value: float) -> str:
+        """Format metric values for display"""
+        if 'sales' in key.lower():
+            return f"${value:,.2f}"
+        elif 'percent' in key.lower():
+            return f"{value:+.1f}%"
+        else:
+            return f"{value:,}"
+    
     def test_connection(self) -> bool:
-        """Test Slack connection"""
+        """Test Slack webhook connection"""
         if self.use_webhook:
             return self._test_webhook_connection()
-        elif self.client:
-            return self._test_bot_connection()
         else:
             return False
     
@@ -217,23 +206,23 @@ class SlackNotifier:
         """Test webhook connection"""
         try:
             test_payload = {
-                "text": "Hey, TODC. Testing webhook connection."
+                "text": "🧪 Hey, TODC. Testing webhook connection from Daily Dashboard."
             }
             
             response = requests.post(
                 self.webhook_url,
                 data=json.dumps(test_payload),
-                headers={'Content-Type': 'application/json'}
+                headers={'Content-Type': 'application/json'},
+                timeout=10
             )
             
-            return response.status_code == 200
-        except Exception:
+            if response.status_code == 200:
+                return True
+            else:
+                st.error(f"Webhook test failed with status code: {response.status_code}")
+                st.error(f"Response: {response.text}")
+                return False
+        except Exception as e:
+            st.error(f"Webhook connection error: {str(e)}")
             return False
     
-    def _test_bot_connection(self) -> bool:
-        """Test bot token connection"""
-        try:
-            response = self.client.auth_test()
-            return response["ok"]
-        except SlackApiError:
-            return False

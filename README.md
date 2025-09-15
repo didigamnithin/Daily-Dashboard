@@ -17,12 +17,15 @@ A comprehensive CEO-level dashboard for analyzing DoorDash and UberEats campaign
 - **Date Range Picker**: Custom date selection with default to today
 - **Operator Filters**: Multi-select operator filtering (extensible)
 - **Real-time Refresh**: Manual data refresh capability
+- **Interactive Drilldown**: Click through Operator → Store → Campaign levels
+- **Progressive Navigation**: Smooth state management with back/forward buttons
 
 ### 📱 Slack Integration
-- **Automated Alerts**: Send performance alerts to Slack channels
+- **Automated Summary**: Send dashboard summary automatically on load
+- **PoP/MoM/YoY Metrics**: Comprehensive performance overview
 - **Formatted Messages**: Rich, structured alert messages with color coding
 - **Test Connectivity**: Built-in Slack connection testing
-- **Multiple Alert Types**: PoP, MoM, and YoY specific alerts
+- **Daily Notifications**: One-time daily summary to avoid spam
 
 ### 🎨 Design & UX
 - **CEO-Level Presentation**: Clean, professional interface
@@ -41,8 +44,87 @@ Daily Dashboard/
 ├── config.py              # Configuration settings
 ├── sql_queries.sql        # All SQL queries for analytics
 ├── requirements.txt       # Python dependencies
+├── test_field_types.py    # Data type testing script
+├── debug_operator_data.py # Operator data debugging script
 └── README.md             # This documentation
 ```
+
+## 🔍 Data Type Reference
+
+### CSV File Field Types
+The `Account Information-McDonalds.csv` file contains the following key field types:
+
+| Field Name | Data Type | Description | Example Values |
+|------------|-----------|-------------|----------------|
+| `DoorDash Store ID` | `float64` | Store identifier as float | `24207786.0`, `655940.0` |
+| `Business Name` | `string` | Operator business name | `"Bear Family Restaurants MCD"` |
+| `Account Name` | `string` | Full account identifier | `"Bear Family Restaurants MCD - 401 Summit St"` |
+| `Status` | `string` | Account status | `"Contracting"`, `"Paused /Cancelled"` |
+
+### BigQuery Table Field Types
+The `dd_raw_promotion_campaigns` table contains the following field types:
+
+| Field Name | Data Type | Description | Example Values |
+|------------|-----------|-------------|----------------|
+| `STORE_ID` | `STRING` | Store identifier as string | `"24207786"`, `"655940"` |
+| `SALES` | `STRING` | Sales amount as string | `"24.21"`, `"35.47"` |
+| `ORDERS` | `STRING` | Order count as string | `"1"`, `"5"` |
+| `ROAS` | `STRING` | Return on ad spend as string | `"4.21"`, `"3.85"` |
+| `CAMPAIGN_ID` | `STRING` | Campaign identifier | `"0617012f-d76a-4b5d-a720-28d0201f604f"` |
+| `DATE` | `STRING` | Date in YYYY-MM-DD format | `"2025-08-05"`, `"2025-08-06"` |
+
+### Data Type Conversion
+The application handles data type conversion between CSV and BigQuery:
+
+1. **CSV to BigQuery**: `float64` → `string`
+   ```python
+   store_id_str = str(int(float(store_id))).strip()
+   ```
+
+2. **BigQuery Processing**: String values are cast to appropriate types in SQL:
+   ```sql
+   SUM(CAST(SALES AS FLOAT64)) as total_sales
+   SUM(CAST(ORDERS AS INT64)) as total_orders
+   AVG(CAST(ROAS AS FLOAT64)) as avg_roas
+   ```
+
+### Common Issues & Solutions
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Zero results in operator table | Date range too narrow | Expand date range to 7+ days |
+| Store IDs not found | Data type mismatch | Verify CSV has valid numeric store IDs |
+| Null values in CSV | Missing data | Check CSV for empty DoorDash Store ID fields |
+| BigQuery connection errors | Invalid credentials | Verify service account JSON file |
+| Font warnings | Invalid Streamlit font | Use system fonts (sans serif, serif, monospace) |
+| BigQuery Storage warnings | Missing storage module | Install: `pip install google-cloud-bigquery-storage` |
+
+## 🆕 New Features (Latest Update)
+
+### Interactive Drilldown Functionality
+The dashboard now supports progressive drill-down navigation:
+
+1. **Operator Level**: View aggregated metrics for all operators
+2. **Store Level**: Click on an operator to see store-wise breakdown
+3. **Campaign Level**: Click on a store to see campaign performance
+
+**Navigation Controls:**
+- 🏠 **Back to Operators**: Return to operator summary view
+- 🏪 **Back to Stores**: Return to store breakdown for selected operator
+- 🔄 **Reset View**: Clear all selections and return to operator view
+
+### Automated Slack Integration
+- **Daily Summary**: Automatically sends PoP, MoM, and YoY metrics on dashboard load
+- **One-time Daily**: Prevents spam by sending only one summary per day
+- **Rich Formatting**: Includes current vs. previous period comparisons
+- **Status Indicators**: Shows connection status in sidebar
+
+### Enhanced Data Processing
+- **Fixed Date Range**: Default to 7-day range for better data visibility
+- **Improved Error Handling**: Better debugging information for empty data
+- **Data Type Validation**: Comprehensive testing scripts for field compatibility
+- **Warning Suppression**: Resolved font and BigQuery Storage warnings
+- **Standard Fonts**: Updated to use system fonts for better compatibility
 
 ## 🛠️ Installation & Setup
 

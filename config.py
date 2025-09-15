@@ -38,7 +38,7 @@ class Config:
     LAYOUT = "wide"
     
     # Font Configuration
-    FONT_FAMILY = "Open Sans"
+    FONT_FAMILY = "sans serif"  # Streamlit compatible font
     PRIMARY_COLOR = "#3b82f6"
     SUCCESS_COLOR = "#059669"
     WARNING_COLOR = "#f59e0b"

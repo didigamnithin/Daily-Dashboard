@@ -4,12 +4,16 @@ Handles connection, data fetching, and query execution
 """
 
 import os
+import warnings
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import streamlit as st
+
+# Suppress BigQuery Storage warnings
+warnings.filterwarnings("ignore", message="BigQuery Storage module not found")
 
 
 class BigQueryClient:

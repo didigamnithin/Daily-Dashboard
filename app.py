@@ -118,10 +118,8 @@ st.markdown("""
 # Custom CSS for styling
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
-    
     .main {
-        font-family: 'Open Sans', sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         color: #000000 !important;
         background-color: #ffffff !important;
     }
@@ -553,6 +551,39 @@ def get_operators_with_store_ids():
         st.error(f"Error loading operators data: {e}")
         return {}
 
+@st.cache_data
+def get_store_data_for_operator(operator_name: str, start_date: str, end_date: str):
+    """Get store-level data for a specific operator"""
+    try:
+        # Get store IDs for the operator
+        operator_data = get_operators_with_store_ids()
+        if operator_name not in operator_data:
+            return pd.DataFrame()
+        
+        store_ids = operator_data[operator_name]
+        if not store_ids:
+            return pd.DataFrame()
+        
+        # Get store-wise data from BigQuery
+        return st.session_state.bigquery_client.get_operator_wise_data(
+            start_date, end_date, store_ids
+        )
+    except Exception as e:
+        st.error(f"Error loading store data for {operator_name}: {e}")
+        return pd.DataFrame()
+
+@st.cache_data
+def get_campaign_data_for_store(store_id: str, start_date: str, end_date: str):
+    """Get campaign-level data for a specific store"""
+    try:
+        # Get campaign data for the store
+        return st.session_state.bigquery_client.get_top_campaigns(
+            days=30, store_ids=[store_id]
+        )
+    except Exception as e:
+        st.error(f"Error loading campaign data for store {store_id}: {e}")
+        return pd.DataFrame()
+
 # Initialize session state
 if 'bigquery_client' not in st.session_state:
     st.session_state.bigquery_client = None
@@ -560,6 +591,12 @@ if 'slack_notifier' not in st.session_state:
     st.session_state.slack_notifier = None
 if 'selected_platform' not in st.session_state:
     st.session_state.selected_platform = 'doordash'
+if 'drilldown_level' not in st.session_state:
+    st.session_state.drilldown_level = "operator"  # operator, store, campaign
+if 'selected_operator' not in st.session_state:
+    st.session_state.selected_operator = None
+if 'selected_store' not in st.session_state:
+    st.session_state.selected_store = None
 
 def initialize_clients():
     """Initialize BigQuery and Slack clients"""
@@ -680,25 +717,20 @@ def render_sidebar():
                     max_value=date.today() - timedelta(days=2)
                 )
         else:
-            # Default to today-2 for faster loading
-            start_date = date.today() - timedelta(days=2)
-            end_date = date.today() - timedelta(days=2)
+            # Default to last 7 days for better data visibility
+            start_date = date.today() - timedelta(days=9)  # Start 9 days ago
+            end_date = date.today() - timedelta(days=2)    # End 2 days ago (7-day range)
         
         # Refresh Button
         if st.button("🔄 Refresh Data", type="primary"):
             st.rerun()
         
-        # Slack Integration
-        st.subheader("Slack Alerts")
+        # Slack Integration Status
+        st.subheader("Slack Integration")
         if st.session_state.slack_notifier:
-            st.success("✅ Slack Connected")
-            if st.button("📤 Send Test Alert"):
-                if st.session_state.slack_notifier.test_connection():
-                    st.success("Test alert sent successfully!")
-                else:
-                    st.error("Failed to send test alert")
+            st.success("✅ Slack Connected - Summary will be sent automatically on load")
         else:
-            st.warning("⚠️ Slack not configured")
+            st.warning("⚠️ Slack not configured - No automatic summaries will be sent")
         
         return start_date, end_date, operators
 
@@ -778,7 +810,7 @@ def render_trend_chart(trend_data: pd.DataFrame):
         yaxis_title="Sales ($)",
         hovermode='x unified',
         template='plotly_white',
-        font=dict(family="Open Sans", size=12, color="#000000"),
+        font=dict(family="Arial, sans-serif", size=12, color="#000000"),
         plot_bgcolor='white',
         paper_bgcolor='white',
         height=500
@@ -793,6 +825,18 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
     """Render operator summary table with aggregated data"""
     if operator_data.empty:
         st.warning("No operator data available")
+        # Add debug information
+        with st.expander("🔍 Debug Information"):
+            st.write("**Possible causes for empty data:**")
+            st.write("1. No data in the selected date range")
+            st.write("2. Store IDs not found in database")
+            st.write("3. All sales values are null or 'null'")
+            st.write("4. Date range is too narrow")
+            st.write("")
+            st.write("**Try:**")
+            st.write("- Expand the date range using 'Use Custom Date Range'")
+            st.write("- Check if store IDs exist in the CSV file")
+            st.write("- Verify the selected operators have valid DoorDash Store IDs")
         return
     
     st.subheader("🏢 Operator Performance Summary")
@@ -812,7 +856,8 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
     column_order = ['rank', 'operator_name', 'total_sales', 'total_orders', 'avg_roas', 'store_count', 'total_campaigns']
     display_data = display_data[column_order]
     
-    st.dataframe(
+    # Create clickable rows for drilldown
+    selected_rows = st.dataframe(
         display_data,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
@@ -824,8 +869,23 @@ def render_operator_summary_table(operator_data: pd.DataFrame):
             "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
         },
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row"
     )
+    
+    # Handle row selection for drilldown
+    if selected_rows.selection.rows:
+        selected_row_idx = selected_rows.selection.rows[0]
+        selected_operator = display_data.iloc[selected_row_idx]['operator_name']
+        
+        # Update session state for drilldown
+        st.session_state.drilldown_level = "store"
+        st.session_state.selected_operator = selected_operator
+        st.session_state.selected_store = None  # Reset store selection
+        
+        st.success(f"🔍 Selected operator: **{selected_operator}** - Loading store details...")
+        st.rerun()
 
 def render_store_wise_breakdown(store_data: pd.DataFrame):
     """Render store-wise breakdown table"""
@@ -849,7 +909,8 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
     column_order = ['rank', 'STORE_ID', 'total_sales', 'total_orders', 'avg_roas', 'total_campaigns']
     display_data = display_data[column_order]
     
-    st.dataframe(
+    # Create clickable rows for drilldown
+    selected_rows = st.dataframe(
         display_data,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
@@ -860,8 +921,131 @@ def render_store_wise_breakdown(store_data: pd.DataFrame):
             "total_campaigns": st.column_config.TextColumn("Campaigns", width="small")
         },
         use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row"
+    )
+    
+    # Handle row selection for drilldown
+    if selected_rows.selection.rows:
+        selected_row_idx = selected_rows.selection.rows[0]
+        selected_store_id = str(display_data.iloc[selected_row_idx]['STORE_ID'])
+        
+        # Update session state for drilldown
+        st.session_state.drilldown_level = "campaign"
+        st.session_state.selected_store = selected_store_id
+        
+        st.success(f"🔍 Selected store: **{selected_store_id}** - Loading campaign details...")
+        st.rerun()
+
+def render_campaign_breakdown(campaign_data: pd.DataFrame):
+    """Render campaign-level breakdown table"""
+    if campaign_data.empty:
+        st.warning("No campaign data available")
+        return
+    
+    st.subheader("📊 Campaign Performance Breakdown")
+    
+    # Format the data for display
+    display_data = campaign_data.copy()
+    if 'total_sales' in display_data.columns:
+        display_data['total_sales'] = display_data['total_sales'].apply(format_currency)
+    if 'avg_roas' in display_data.columns:
+        display_data['avg_roas'] = display_data['avg_roas'].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A")
+    if 'total_orders' in display_data.columns:
+        display_data['total_orders'] = display_data['total_orders'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+    
+    # Add performance ranking
+    display_data['rank'] = range(1, len(display_data) + 1)
+    
+    st.dataframe(
+        display_data,
+        use_container_width=True,
         hide_index=True
     )
+
+def render_drilldown_navigation():
+    """Render navigation buttons for drilldown levels"""
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("🏠 Back to Operators", disabled=st.session_state.drilldown_level == "operator"):
+            st.session_state.drilldown_level = "operator"
+            st.session_state.selected_operator = None
+            st.session_state.selected_store = None
+            st.rerun()
+    
+    with col2:
+        if st.button("🏪 Back to Stores", disabled=st.session_state.drilldown_level in ["operator", "store"]):
+            st.session_state.drilldown_level = "store"
+            st.session_state.selected_store = None
+            st.rerun()
+    
+    with col3:
+        if st.button("🔄 Reset View"):
+            st.session_state.drilldown_level = "operator"
+            st.session_state.selected_operator = None
+            st.session_state.selected_store = None
+            st.rerun()
+
+def send_dashboard_summary_on_load(pop_data: Dict, mom_data: Dict, yoy_data: Dict, start_date_str: str, end_date_str: str):
+    """Send dashboard summary to Slack on load"""
+    if not st.session_state.slack_notifier:
+        return
+    
+    # Check if summary was already sent today
+    today = datetime.now().strftime("%Y-%m-%d")
+    summary_key = f"summary_sent_{today}"
+    
+    if summary_key not in st.session_state:
+        try:
+            # Prepare summary data
+            summary_data = {
+                'date': today,
+                'platform': st.session_state.selected_platform.title(),
+                'date_range': f"{start_date_str} to {end_date_str}",
+                'metrics': {}
+            }
+            
+            # Add PoP metrics
+            if pop_data:
+                summary_data['metrics'].update({
+                    'Current Sales (PoP)': pop_data.get('current_sales', 0),
+                    'Previous Sales (PoP)': pop_data.get('prev_sales', 0),
+                    'Sales Change (PoP)': pop_data.get('sales_delta_percent', 0),
+                    'Current Orders (PoP)': pop_data.get('current_orders', 0),
+                    'Previous Orders (PoP)': pop_data.get('prev_orders', 0),
+                    'Orders Change (PoP)': pop_data.get('orders_delta_percent', 0)
+                })
+            
+            # Add MoM metrics
+            if mom_data:
+                summary_data['metrics'].update({
+                    'Current Month Sales (MoM)': mom_data.get('current_month_sales', 0),
+                    'Previous Month Sales (MoM)': mom_data.get('prev_month_sales', 0),
+                    'Sales Change (MoM)': mom_data.get('mom_sales_delta_percent', 0)
+                })
+            
+            # Add YoY metrics
+            if yoy_data:
+                summary_data['metrics'].update({
+                    'Current Year Sales (YoY)': yoy_data.get('current_year_sales', 0),
+                    'Previous Year Sales (YoY)': yoy_data.get('prev_year_sales', 0),
+                    'Sales Change (YoY)': yoy_data.get('yoy_sales_delta_percent', 0)
+                })
+            
+            # Send summary to Slack
+            channel = os.getenv('SLACK_CHANNEL', '#alerts')
+            success = st.session_state.slack_notifier.send_daily_summary(channel, summary_data)
+            
+            if success:
+                st.session_state[summary_key] = True
+                st.success("📤 Dashboard summary sent to Slack!")
+            else:
+                st.warning("⚠️ Failed to send dashboard summary to Slack")
+                
+        except Exception as e:
+            st.error(f"Error sending dashboard summary: {e}")
 
 def render_top_campaigns(campaigns_data: pd.DataFrame):
     """Render top performing campaigns table"""
@@ -954,26 +1138,51 @@ def main():
         # Fetch additional data (reduced for faster loading)
         campaigns_data = st.session_state.bigquery_client.get_top_campaigns(7, store_ids)  # Only last 7 days initially
     
+    # Send dashboard summary to Slack on load
+    send_dashboard_summary_on_load(pop_data, mom_data, yoy_data, start_date_str, end_date_str)
+    
     # Render KPI widgets
     render_kpi_widgets(pop_data, mom_data, yoy_data)
     
     # Add some spacing
     st.markdown("---")
     
-    # Render operator summary table
-    render_operator_summary_table(operator_summary_data)
+    # Render drilldown navigation
+    render_drilldown_navigation()
     
-    # Show store-wise breakdown only if specific operators are selected (not "All")
-    if not store_breakdown_data.empty:
-        # Add some spacing
-        st.markdown("---")
-        render_store_wise_breakdown(store_breakdown_data)
+    # Handle drilldown levels
+    if st.session_state.drilldown_level == "operator":
+        # Render operator summary table
+        render_operator_summary_table(operator_summary_data)
+        
+        # Show store-wise breakdown only if specific operators are selected (not "All")
+        if not store_breakdown_data.empty:
+            # Add some spacing
+            st.markdown("---")
+            render_store_wise_breakdown(store_breakdown_data)
+    
+    elif st.session_state.drilldown_level == "store" and st.session_state.selected_operator:
+        # Show store-level data for selected operator
+        st.subheader(f"🏪 Store Performance - {st.session_state.selected_operator}")
+        store_data = get_store_data_for_operator(
+            st.session_state.selected_operator, start_date_str, end_date_str
+        )
+        render_store_wise_breakdown(store_data)
+    
+    elif st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
+        # Show campaign-level data for selected store
+        st.subheader(f"📊 Campaign Performance - Store {st.session_state.selected_store}")
+        campaign_data = get_campaign_data_for_store(
+            st.session_state.selected_store, start_date_str, end_date_str
+        )
+        render_campaign_breakdown(campaign_data)
     
     # Add some spacing
     st.markdown("---")
     
-    # Full width campaigns table below the operator tables
-    render_top_campaigns(campaigns_data)
+    # Full width campaigns table below the operator tables (only show in operator view)
+    if st.session_state.drilldown_level == "operator":
+        render_top_campaigns(campaigns_data)
     
     # Add option to load more data
     st.markdown("---")
@@ -1023,45 +1232,7 @@ def main():
             with st.spinner("Loading all data..."):
                 st.rerun()
     
-    # Slack alerts section
-    if st.session_state.slack_notifier:
-        st.markdown("---")
-        st.subheader("📤 Slack Alerts")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("Send PoP Alert"):
-                if pop_data:
-                    success = st.session_state.slack_notifier.send_sales_alert(
-                        "#marketing-alerts", pop_data, "pop"
-                    )
-                    if success:
-                        st.success("PoP alert sent!")
-                    else:
-                        st.error("Failed to send PoP alert")
-        
-        with col2:
-            if st.button("Send MoM Alert"):
-                if mom_data:
-                    success = st.session_state.slack_notifier.send_sales_alert(
-                        "#marketing-alerts", mom_data, "mom"
-                    )
-                    if success:
-                        st.success("MoM alert sent!")
-                    else:
-                        st.error("Failed to send MoM alert")
-        
-        with col3:
-            if st.button("Send YoY Alert"):
-                if yoy_data:
-                    success = st.session_state.slack_notifier.send_sales_alert(
-                        "#marketing-alerts", yoy_data, "yoy"
-                    )
-                    if success:
-                        st.success("YoY alert sent!")
-                    else:
-                        st.error("Failed to send YoY alert")
+    # Note: Slack alerts are now sent automatically on dashboard load
     
     # Footer
     st.markdown("---")

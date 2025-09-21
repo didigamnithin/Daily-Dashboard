@@ -42,42 +42,23 @@ class BigQueryClient:
             st.error(f"Query execution failed: {str(e)}")
             return pd.DataFrame()
     
-    def get_pop_data(self, start_date: str, end_date: str, platform: str = "doordash", store_ids: list = None) -> Dict:
-        """Get Period over Period data"""
+    def get_wow_data(self, start_date: str, end_date: str, platform: str = "doordash", store_ids: list = None) -> Dict:
+        """Get Week over Week data"""
         # Parse the provided dates
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
         
-        # If start and end dates are the same (single day), use today-3 logic
-        if start_dt == end_dt:
-            # Use today-3 for current period, today-5 for previous period (2-day periods)
-            today = datetime.now().date()
-            
-            # Current period: today-3 to today-2 (2 days)
-            current_start = today - timedelta(days=3)
-            current_end = today - timedelta(days=2)
-            
-            # Previous period: today-5 to today-4 (2 days)
-            prev_start = today - timedelta(days=5)
-            prev_end = today - timedelta(days=4)
-            
-            start_date = current_start.strftime("%Y-%m-%d")
-            end_date = current_end.strftime("%Y-%m-%d")
-            prev_start_date = prev_start.strftime("%Y-%m-%d")
-            prev_end_date = prev_end.strftime("%Y-%m-%d")
-        else:
-            # Use the provided dates and calculate previous period
-            period_days = (end_dt - start_dt).days + 1
-            prev_end_dt = start_dt - timedelta(days=1)
-            prev_start_dt = prev_end_dt - timedelta(days=period_days - 1)
-            
-            prev_start_date = prev_start_dt.strftime("%Y-%m-%d")
-            prev_end_date = prev_end_dt.strftime("%Y-%m-%d")
+        # Calculate previous week (7 days before current week)
+        prev_start_dt = start_dt - timedelta(days=7)
+        prev_end_dt = end_dt - timedelta(days=7)
+        
+        prev_start_date = prev_start_dt.strftime("%Y-%m-%d")
+        prev_end_date = prev_end_dt.strftime("%Y-%m-%d")
         
         if platform.lower() == "doordash":
-            query = self._get_dd_pop_query(store_ids)
+            query = self._get_dd_wow_query(store_ids)
         else:
-            query = self._get_ue_pop_query(store_ids)
+            query = self._get_ue_wow_query(store_ids)
         
         # Replace placeholders in query
         query = query.format(
@@ -112,21 +93,23 @@ class BigQueryClient:
         return {}
     
     def get_daily_trend_data(self, days: int = 30) -> pd.DataFrame:
-        """Get daily sales trend data"""
+        """Get daily sales trend data using mcd_account_information table"""
         query = """
         SELECT 
-          DATE,
-          SUM(CAST(SALES AS FLOAT64)) as daily_sales,
-          COUNT(DISTINCT CAMPAIGN_ID) as daily_campaigns,
-          SUM(CAST(ORDERS AS INT64)) as daily_orders
-        FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-        WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL {days} DAY)
-          AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
-          AND SALES IS NOT NULL
-          AND SALES != 'null'
-          AND SALES != ''
-        GROUP BY DATE
-        ORDER BY DATE
+          p.DATE,
+          SUM(CAST(p.SALES AS FLOAT64)) as daily_sales,
+          COUNT(DISTINCT p.CAMPAIGN_ID) as daily_campaigns,
+          SUM(CAST(p.ORDERS AS INT64)) as daily_orders
+        FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+        JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+          ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+        WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL {days} DAY)
+          AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
+          AND p.SALES IS NOT NULL
+          AND p.SALES != 'null'
+          AND p.SALES != ''
+        GROUP BY p.DATE
+        ORDER BY p.DATE
         """.format(
             project_id=self.project_id,
             days=days
@@ -134,77 +117,90 @@ class BigQueryClient:
         return self.execute_query(query)
     
     def get_top_campaigns(self, days: int = 30, store_ids: list = None) -> pd.DataFrame:
-        """Get top performing campaigns"""
+        """Get top performing campaigns using mcd_account_information table"""
         store_filter = ""
         if store_ids:
             # Filter out empty or invalid store IDs
             valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
             if valid_store_ids:
                 store_ids_str = "', '".join(valid_store_ids)
-                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+                store_filter = f"AND p.STORE_ID IN ('{store_ids_str}')"
         
         query = """
         WITH current_period AS (
           SELECT 
-            CAMPAIGN_NAME,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as total_sales,
-            SUM(CAST(ORDERS AS INT64)) as total_orders,
-            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            p.CAMPAIGN_NAME,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as total_orders,
+            AVG(CAST(p.ROAS AS FLOAT64)) as avg_roas,
             COUNT(*) as campaign_days
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '2025-09-08' AND '2025-09-09'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-09-08' AND '2025-09-09'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY CAMPAIGN_NAME, STORE_NAME
+          GROUP BY p.CAMPAIGN_NAME, p.STORE_NAME, a.`Business Name`
         ),
         previous_period AS (
           SELECT 
-            CAMPAIGN_NAME,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as prev_sales,
-            SUM(CAST(ORDERS AS INT64)) as prev_orders
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '2025-09-06' AND '2025-09-07'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.CAMPAIGN_NAME,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_orders
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-09-06' AND '2025-09-07'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY CAMPAIGN_NAME, STORE_NAME
+          GROUP BY p.CAMPAIGN_NAME, p.STORE_NAME, a.`Business Name`
         ),
         current_month AS (
           SELECT 
-            CAMPAIGN_NAME,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as month_sales,
-            SUM(CAST(ORDERS AS INT64)) as month_orders
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '2025-09-01' AND '2025-09-09'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.CAMPAIGN_NAME,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as month_orders
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-09-01' AND '2025-09-09'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY CAMPAIGN_NAME, STORE_NAME
+          GROUP BY p.CAMPAIGN_NAME, p.STORE_NAME, a.`Business Name`
         ),
         previous_month AS (
           SELECT 
-            CAMPAIGN_NAME,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as prev_month_sales,
-            SUM(CAST(ORDERS AS INT64)) as prev_month_orders
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '2025-08-01' AND '2025-08-09'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.CAMPAIGN_NAME,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_month_orders
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-08-01' AND '2025-08-09'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY CAMPAIGN_NAME, STORE_NAME
+          GROUP BY p.CAMPAIGN_NAME, p.STORE_NAME, a.`Business Name`
         )
         SELECT 
           c.CAMPAIGN_NAME,
           c.STORE_NAME,
+          c.`Business Name`,
           c.total_sales,
           c.total_orders,
           c.avg_roas,
@@ -219,7 +215,7 @@ class BigQueryClient:
             WHEN COALESCE(p.prev_sales, 0) > 0 
             THEN ROUND(((c.total_sales - COALESCE(p.prev_sales, 0)) / COALESCE(p.prev_sales, 0)) * 100, 2)
             ELSE 0 
-          END as pop_sales_delta_percent,
+          END as wow_sales_delta_percent,
           CASE 
             WHEN COALESCE(pm.prev_month_sales, 0) > 0 
             THEN ROUND(((COALESCE(m.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100, 2)
@@ -276,7 +272,7 @@ class BigQueryClient:
           0 as month_orders,
           0 as prev_month_sales,
           0 as prev_month_orders,
-          0 as pop_sales_delta_percent,
+          0 as wow_sales_delta_percent,
           0 as mom_sales_delta_percent
         FROM all_data
         ORDER BY total_sales DESC
@@ -329,7 +325,7 @@ class BigQueryClient:
           0 as month_orders,
           0 as prev_month_sales,
           0 as prev_month_orders,
-          0 as pop_sales_delta_percent,
+          0 as wow_sales_delta_percent,
           0 as mom_sales_delta_percent
         FROM all_campaigns
         ORDER BY total_sales DESC
@@ -344,17 +340,129 @@ class BigQueryClient:
             print(f"Error in get_ue_top_campaigns_all_time: {e}")
             return pd.DataFrame()
     
+    def get_ue_bottom_operators_by_sales(self, limit: int = 5) -> pd.DataFrame:
+        """Get bottom performing operators by sales for UberEats"""
+        query = """
+        WITH operator_sales AS (
+          SELECT 
+            STORE_ID,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT CAMPAIGN_NAME) as total_campaigns
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+          GROUP BY STORE_ID, STORE_NAME
+        )
+        SELECT 
+          STORE_ID,
+          STORE_NAME,
+          total_sales,
+          total_orders,
+          avg_roas,
+          total_campaigns,
+          'UberEats Store' as operator_name
+        FROM operator_sales
+        ORDER BY total_sales ASC
+        LIMIT {limit}
+        """.format(
+            project_id=self.project_id,
+            limit=limit
+        )
+        try:
+            return self.execute_query(query)
+        except Exception as e:
+            print(f"Error in get_ue_bottom_operators_by_sales: {e}")
+            return pd.DataFrame()
+    
+    def get_ue_bottom_stores_by_sales(self, limit: int = 5) -> pd.DataFrame:
+        """Get bottom performing stores by sales for UberEats"""
+        query = """
+        WITH store_sales AS (
+          SELECT 
+            STORE_ID,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT CAMPAIGN_NAME) as total_campaigns
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+          GROUP BY STORE_ID, STORE_NAME
+        )
+        SELECT 
+          STORE_ID,
+          STORE_NAME,
+          total_sales,
+          total_orders,
+          avg_roas,
+          total_campaigns
+        FROM store_sales
+        ORDER BY total_sales ASC
+        LIMIT {limit}
+        """.format(
+            project_id=self.project_id,
+            limit=limit
+        )
+        try:
+            return self.execute_query(query)
+        except Exception as e:
+            print(f"Error in get_ue_bottom_stores_by_sales: {e}")
+            return pd.DataFrame()
+    
+    def get_ue_bottom_campaigns_by_sales(self, limit: int = 5) -> pd.DataFrame:
+        """Get bottom performing campaigns by sales for UberEats"""
+        query = """
+        WITH campaign_sales AS (
+          SELECT 
+            CAMPAIGN_NAME,
+            STORE_NAME,
+            SUM(CAST(SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(ORDERS AS INT64)) as total_orders,
+            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
+            COUNT(*) as campaign_days
+          FROM `{project_id}.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+          GROUP BY CAMPAIGN_NAME, STORE_NAME
+        )
+        SELECT 
+          CAMPAIGN_NAME,
+          STORE_NAME,
+          total_sales,
+          total_orders,
+          avg_roas,
+          campaign_days
+        FROM campaign_sales
+        ORDER BY total_sales ASC
+        LIMIT {limit}
+        """.format(
+            project_id=self.project_id,
+            limit=limit
+        )
+        try:
+            return self.execute_query(query)
+        except Exception as e:
+            print(f"Error in get_ue_bottom_campaigns_by_sales: {e}")
+            return pd.DataFrame()
+    
     def get_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
-        """Get operator-wise sales, orders, and ROAS data with PoP and MoM calculations"""
+        """Get operator-wise sales, orders, and ROAS data with WoW and MoM calculations using mcd_account_information table"""
         store_filter = ""
         if store_ids:
             # Filter out empty or invalid store IDs
             valid_store_ids = [str(sid).strip() for sid in store_ids if str(sid).strip() and str(sid).strip() != 'nan']
             if valid_store_ids:
                 store_ids_str = "', '".join(valid_store_ids)
-                store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+                store_filter = f"AND p.STORE_ID IN ('{store_ids_str}')"
         
-        # Calculate previous period dates for PoP
+        # Calculate previous period dates for WoW
         from datetime import datetime, timedelta
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -369,68 +477,81 @@ class BigQueryClient:
         query = """
         WITH current_period AS (
           SELECT 
-            STORE_ID,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as total_sales,
-            SUM(CAST(ORDERS AS INT64)) as total_orders,
-            AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
-            COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.STORE_ID,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as total_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as total_orders,
+            AVG(CAST(p.ROAS AS FLOAT64)) as avg_roas,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as total_campaigns
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{start_date}' AND '{end_date}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY STORE_ID, STORE_NAME
+          GROUP BY p.STORE_ID, p.STORE_NAME, a.`Business Name`
         ),
         previous_period AS (
           SELECT 
-            STORE_ID,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as prev_sales,
-            SUM(CAST(ORDERS AS INT64)) as prev_orders,
-            AVG(CAST(ROAS AS FLOAT64)) as prev_roas
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{prev_start_date}' AND '{prev_end_date}'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.STORE_ID,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_orders,
+            AVG(CAST(p.ROAS AS FLOAT64)) as prev_roas
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{prev_start_date}' AND '{prev_end_date}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY STORE_ID, STORE_NAME
+          GROUP BY p.STORE_ID, p.STORE_NAME, a.`Business Name`
         ),
         current_month AS (
           SELECT 
-            STORE_ID,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as month_sales,
-            SUM(CAST(ORDERS AS INT64)) as month_orders
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.STORE_ID,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as month_orders
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY STORE_ID, STORE_NAME
+          GROUP BY p.STORE_ID, p.STORE_NAME, a.`Business Name`
         ),
         previous_month AS (
           SELECT 
-            STORE_ID,
-            STORE_NAME,
-            SUM(CAST(SALES AS FLOAT64)) as prev_month_sales,
-            SUM(CAST(ORDERS AS INT64)) as prev_month_orders
-          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            p.STORE_ID,
+            p.STORE_NAME,
+            a.`Business Name`,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_month_orders
+          FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
-          GROUP BY STORE_ID, STORE_NAME
+          GROUP BY p.STORE_ID, p.STORE_NAME, a.`Business Name`
         )
         SELECT 
           cp.STORE_ID,
           cp.STORE_NAME,
+          cp.`Business Name`,
           cp.total_sales,
           cp.total_orders,
           cp.avg_roas,
@@ -444,7 +565,7 @@ class BigQueryClient:
           CASE 
             WHEN COALESCE(pp.prev_sales, 0) > 0 THEN ((cp.total_sales - COALESCE(pp.prev_sales, 0)) / COALESCE(pp.prev_sales, 0)) * 100
             ELSE 0
-          END as pop_sales_delta_percent,
+          END as wow_sales_delta_percent,
           CASE 
             WHEN COALESCE(pm.prev_month_sales, 0) > 0 THEN ((COALESCE(cm.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100
             ELSE 0
@@ -465,10 +586,10 @@ class BigQueryClient:
         return self.execute_query(query)
     
     def get_operator_aggregated_data(self, start_date: str, end_date: str, operator_store_mapping: dict) -> pd.DataFrame:
-        """Get aggregated data for each operator with PoP and MoM calculations"""
+        """Get aggregated data for each operator with WoW and MoM calculations using mcd_account_information table"""
         all_results = []
         
-        # Calculate previous period dates for PoP
+        # Calculate previous period dates for WoW
         from datetime import datetime, timedelta
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -489,59 +610,68 @@ class BigQueryClient:
             if not valid_store_ids:
                 continue
                 
-            # Properly format store IDs for SQL IN clause
+            # Use a safer approach - filter by store IDs only, not by operator name
+            # This avoids SQL injection issues with special characters in operator names
             store_ids_str = "', '".join(valid_store_ids)
-            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            store_filter = f"AND p.STORE_ID IN ('{store_ids_str}')"
             
-            # Complex query with PoP and MoM calculations
+            # Complex query with WoW and MoM calculations using JOIN with mcd_account_information
             query = """
             WITH current_period AS (
               SELECT 
-                SUM(CAST(SALES AS FLOAT64)) as total_sales,
-                SUM(CAST(ORDERS AS INT64)) as total_orders,
-                AVG(CAST(ROAS AS FLOAT64)) as avg_roas,
-                COUNT(DISTINCT CAMPAIGN_ID) as total_campaigns
-              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-              WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{start_date}' AND '{end_date}'
-                AND SALES IS NOT NULL
-                AND SALES != 'null'
-                AND SALES != ''
+                SUM(CAST(p.SALES AS FLOAT64)) as total_sales,
+                SUM(CAST(p.ORDERS AS INT64)) as total_orders,
+                AVG(CAST(p.ROAS AS FLOAT64)) as avg_roas,
+                COUNT(DISTINCT p.CAMPAIGN_ID) as total_campaigns
+              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+              JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+                ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+              WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{start_date}' AND '{end_date}'
+                AND p.SALES IS NOT NULL
+                AND p.SALES != 'null'
+                AND p.SALES != ''
                 {store_filter}
             ),
             previous_period AS (
               SELECT 
-                SUM(CAST(SALES AS FLOAT64)) as prev_sales,
-                SUM(CAST(ORDERS AS INT64)) as prev_orders,
-                AVG(CAST(ROAS AS FLOAT64)) as prev_roas
-              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-              WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{prev_start_date}' AND '{prev_end_date}'
-                AND SALES IS NOT NULL
-                AND SALES != 'null'
-                AND SALES != ''
+                SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+                SUM(CAST(p.ORDERS AS INT64)) as prev_orders,
+                AVG(CAST(p.ROAS AS FLOAT64)) as prev_roas
+              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+              JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+                ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+              WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{prev_start_date}' AND '{prev_end_date}'
+                AND p.SALES IS NOT NULL
+                AND p.SALES != 'null'
+                AND p.SALES != ''
                 {store_filter}
             ),
             current_month AS (
               SELECT 
-                SUM(CAST(SALES AS FLOAT64)) as month_sales,
-                SUM(CAST(ORDERS AS INT64)) as month_orders
-              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-              WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
-                AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
-                AND SALES IS NOT NULL
-                AND SALES != 'null'
-                AND SALES != ''
+                SUM(CAST(p.SALES AS FLOAT64)) as month_sales,
+                SUM(CAST(p.ORDERS AS INT64)) as month_orders
+              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+              JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+                ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+              WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
+                AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+                AND p.SALES IS NOT NULL
+                AND p.SALES != 'null'
+                AND p.SALES != ''
                 {store_filter}
             ),
             previous_month AS (
               SELECT 
-                SUM(CAST(SALES AS FLOAT64)) as prev_month_sales,
-                SUM(CAST(ORDERS AS INT64)) as prev_month_orders
-              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns`
-              WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
-                AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
-                AND SALES IS NOT NULL
-                AND SALES != 'null'
-                AND SALES != ''
+                SUM(CAST(p.SALES AS FLOAT64)) as prev_month_sales,
+                SUM(CAST(p.ORDERS AS INT64)) as prev_month_orders
+              FROM `{project_id}.merchant_portal_upload.dd_raw_promotion_campaigns` p
+              JOIN `{project_id}.merchant_portal_upload.mcd_account_information` a
+                ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+              WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
+                AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
+                AND p.SALES IS NOT NULL
+                AND p.SALES != 'null'
+                AND p.SALES != ''
                 {store_filter}
             )
             SELECT 
@@ -558,7 +688,7 @@ class BigQueryClient:
               CASE 
                 WHEN COALESCE(pp.prev_sales, 0) > 0 THEN ((cp.total_sales - COALESCE(pp.prev_sales, 0)) / COALESCE(pp.prev_sales, 0)) * 100
                 ELSE 0
-              END as pop_sales_delta_percent,
+              END as wow_sales_delta_percent,
               CASE 
                 WHEN COALESCE(pm.prev_month_sales, 0) > 0 THEN ((COALESCE(cm.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100
                 ELSE 0
@@ -589,36 +719,40 @@ class BigQueryClient:
         else:
             return pd.DataFrame()
     
-    def _get_dd_pop_query(self, store_ids: list = None) -> str:
-        """Get DoorDash PoP query"""
+    def _get_dd_wow_query(self, store_ids: list = None) -> str:
+        """Get DoorDash WoW query using mcd_account_information table"""
         store_filter = ""
         if store_ids:
             store_ids_str = "', '".join(store_ids)
-            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+            store_filter = f"AND p.STORE_ID IN ('{store_ids_str}')"
         
         return f"""
         WITH selected_period AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as current_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as current_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as current_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as current_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as current_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as current_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
         ),
         previous_period AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as prev_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as prev_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as prev_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as prev_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
             {store_filter}
         )
         SELECT 
@@ -639,8 +773,8 @@ class BigQueryClient:
         FROM selected_period, previous_period
         """
     
-    def _get_ue_pop_query(self, store_ids: list = None) -> str:
-        """Get UberEats PoP query"""
+    def _get_ue_wow_query(self, store_ids: list = None) -> str:
+        """Get UberEats WoW query"""
         store_filter = ""
         if store_ids:
             store_ids_str = "', '".join(store_ids)
@@ -690,31 +824,35 @@ class BigQueryClient:
         """
     
     def _get_mom_query(self) -> str:
-        """Get Month over Month query"""
+        """Get Month over Month query using mcd_account_information table"""
         return """
         WITH current_month AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as current_month_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as current_month_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as current_month_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as current_month_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as current_month_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as current_month_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
         ),
         previous_month AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as prev_month_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as prev_month_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as prev_month_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_month_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as prev_month_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_month_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
         )
         SELECT 
           current_month_sales,
@@ -778,31 +916,35 @@ class BigQueryClient:
         """
     
     def _get_yoy_query(self) -> str:
-        """Get Year over Year query"""
+        """Get Year over Year query using mcd_account_information table"""
         return """
         WITH current_year AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as current_year_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as current_year_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as current_year_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), YEAR)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as current_year_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as current_year_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as current_year_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), YEAR)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
         ),
         previous_year AS (
           SELECT 
-            SUM(CAST(SALES AS FLOAT64)) as prev_year_sales,
-            COUNT(DISTINCT CAMPAIGN_ID) as prev_year_campaigns,
-            SUM(CAST(ORDERS AS INT64)) as prev_year_orders
-          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
-          WHERE PARSE_DATE('%Y-%m-%d', DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 YEAR), YEAR)
-            AND PARSE_DATE('%Y-%m-%d', DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 YEAR)
-            AND SALES IS NOT NULL
-            AND SALES != 'null'
-            AND SALES != ''
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_year_sales,
+            COUNT(DISTINCT p.CAMPAIGN_ID) as prev_year_campaigns,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_year_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 YEAR), YEAR)
+            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY), INTERVAL 1 YEAR)
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
         )
         SELECT 
           current_year_sales,
@@ -823,7 +965,7 @@ class BigQueryClient:
         """
     
     def get_ue_operator_wise_data(self, start_date: str, end_date: str, store_ids: list = None) -> pd.DataFrame:
-        """Get operator-wise sales, orders, and ROAS data for UberEats with PoP and MoM calculations - using old data dates"""
+        """Get operator-wise sales, orders, and ROAS data for UberEats with WoW and MoM calculations - using old data dates"""
         store_filter = ""
         if store_ids:
             # Filter out empty or invalid store IDs
@@ -916,7 +1058,7 @@ class BigQueryClient:
           CASE 
             WHEN COALESCE(pp.prev_sales, 0) > 0 THEN ((cp.total_sales - COALESCE(pp.prev_sales, 0)) / COALESCE(pp.prev_sales, 0)) * 100
             ELSE 0
-          END as pop_sales_delta_percent,
+          END as wow_sales_delta_percent,
           CASE 
             WHEN COALESCE(pm.prev_month_sales, 0) > 0 THEN ((COALESCE(cm.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100
             ELSE 0
@@ -937,7 +1079,7 @@ class BigQueryClient:
         return self.execute_query(query)
     
     def get_ue_operator_aggregated_data(self, start_date: str, end_date: str, operator_store_mapping: dict) -> pd.DataFrame:
-        """Get aggregated data for each operator with PoP and MoM calculations (UberEats) - using old data dates"""
+        """Get aggregated data for each operator with WoW and MoM calculations (UberEats) - using old data dates"""
         all_results = []
         
         # Use old UberEats data dates (May 2025)
@@ -959,7 +1101,7 @@ class BigQueryClient:
             store_ids_str = "', '".join(valid_store_ids)
             store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
             
-            # Complex query with PoP and MoM calculations for UberEats
+            # Complex query with WoW and MoM calculations for UberEats
             query = """
             WITH current_period AS (
               SELECT 
@@ -1024,7 +1166,7 @@ class BigQueryClient:
               CASE 
                 WHEN COALESCE(pp.prev_sales, 0) > 0 THEN ((cp.total_sales - COALESCE(pp.prev_sales, 0)) / COALESCE(pp.prev_sales, 0)) * 100
                 ELSE 0
-              END as pop_sales_delta_percent,
+              END as wow_sales_delta_percent,
               CASE 
                 WHEN COALESCE(pm.prev_month_sales, 0) > 0 THEN ((COALESCE(cm.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100
                 ELSE 0
@@ -1141,7 +1283,7 @@ class BigQueryClient:
             WHEN COALESCE(p.prev_sales, 0) > 0 
             THEN ROUND(((c.total_sales - COALESCE(p.prev_sales, 0)) / COALESCE(p.prev_sales, 0)) * 100, 2)
             ELSE 0 
-          END as pop_sales_delta_percent,
+          END as wow_sales_delta_percent,
           CASE 
             WHEN COALESCE(pm.prev_month_sales, 0) > 0 
             THEN ROUND(((COALESCE(m.month_sales, 0) - COALESCE(pm.prev_month_sales, 0)) / COALESCE(pm.prev_month_sales, 0)) * 100, 2)

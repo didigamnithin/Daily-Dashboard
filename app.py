@@ -405,6 +405,32 @@ st.markdown("""
         color: #000000 !important;
     }
     
+    /* Red row styling for low WoW performance */
+    .low-wow-row {
+        background-color: #dc2626 !important;
+        color: #ffffff !important;
+    }
+    
+    .low-wow-row * {
+        background-color: #dc2626 !important;
+        color: #ffffff !important;
+    }
+    
+    .low-wow-row td, .low-wow-row th {
+        background-color: #dc2626 !important;
+        color: #ffffff !important;
+    }
+    
+    .low-wow-row:hover {
+        background-color: #b91c1c !important;
+        color: #ffffff !important;
+    }
+    
+    .low-wow-row:hover * {
+        background-color: #b91c1c !important;
+        color: #ffffff !important;
+    }
+    
     /* Sidebar toggle button */
     .stSidebarToggle {
         background-color: #ffffff !important;
@@ -587,6 +613,17 @@ def get_operators_with_store_ids():
         st.error(f"Error loading operators data from BigQuery: {e}")
         return {}
 
+@st.cache_data
+def get_max_date_for_platform(platform: str):
+    """Get the maximum date available for the given platform"""
+    try:
+        if not st.session_state.bigquery_client:
+            return None
+        return st.session_state.bigquery_client.get_max_date(platform)
+    except Exception as e:
+        st.error(f"Error getting max date: {e}")
+        return None
+
 
 @st.cache_data
 def get_store_data_for_operator(operator_name: str, start_date: str, end_date: str):
@@ -709,9 +746,15 @@ def load_kpi_data_if_needed(platform: str, start_date: str, end_date: str, store
             st.session_state.current_date_range = f"{start_date}_{end_date}"
 
 def load_operator_data_if_needed(platform: str, start_date: str, end_date: str, store_ids: list, selected_businesses: list):
-    """Load operator data only if needed"""
+    """Load operator data only if needed - using max date for actual data"""
     if not st.session_state.operator_data_loaded or should_reload_data(platform, start_date, end_date):
         with st.spinner("Loading operator data..."):
+            # Get max date for the platform
+            max_date = get_max_date_for_platform(platform)
+            if not max_date:
+                st.error("Could not determine max date for data loading")
+                return
+            
             # Get operator data for the selected businesses
             target_operators_data = get_operators_with_store_ids()
             # Filter to only include selected businesses
@@ -719,17 +762,17 @@ def load_operator_data_if_needed(platform: str, start_date: str, end_date: str, 
             
             if platform == "ubereats":
                 st.session_state.operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
-                    start_date, end_date, filtered_operators_data
+                    max_date, max_date, filtered_operators_data
                 )
                 st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data_all_time(
                     store_ids
                 )
             else:
                 st.session_state.operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                    start_date, end_date, filtered_operators_data
+                    max_date, max_date, filtered_operators_data
                 )
                 st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
-                    start_date, end_date, store_ids
+                    max_date, max_date, store_ids
                 )
             
             st.session_state.operator_data_loaded = True
@@ -848,29 +891,14 @@ def render_sidebar():
         business_names = load_business_names()
         selected_businesses = business_names  # Use all businesses
         
-        # Date Range Selection
+        # Date Range Selection - Fixed to latest available data
         st.subheader("Date Range")
-        use_custom_dates = st.checkbox("Use Custom Date Range", value=False)
+        st.info("📅 Data shown for latest available date")
         
-        if use_custom_dates:
-            col1, col2 = st.columns(2)
-            with col1:
-                start_date = st.date_input(
-                    "From Date",
-                    value=date.today() - timedelta(days=9),  # Default to 7 days before today-2
-                    max_value=date.today() - timedelta(days=2)
-                )
-            with col2:
-                end_date = st.date_input(
-                    "To Date",
-                    value=date.today() - timedelta(days=2),  # Default to today-2
-                    max_value=date.today() - timedelta(days=2)
-                )
-        else:
-            # Default to today - 2 (since BigQuery data is typically 2 days behind)
-            default_date = date.today() - timedelta(days=2)
-            start_date = default_date
-            end_date = default_date
+        # Default to latest available data (2025-09-10) since BigQuery data is 12 days behind
+        default_date = date(2025, 9, 10)  # Latest available data
+        start_date = default_date
+        end_date = default_date
         
         # Refresh Button
         if st.button("🔄 Refresh Data", type="primary"):
@@ -887,7 +915,7 @@ def render_sidebar():
         return start_date, end_date, selected_businesses
 
 def load_kpi_data_individual(start_date_str: str, end_date_str: str, platform: str, store_ids: list) -> Dict[str, Any]:
-    """Load KPI data individually"""
+    """Load KPI data individually - WoW uses all operators, MoM uses positive operators only"""
     try:
         wow_data = st.session_state.bigquery_client.get_wow_data(
             start_date_str, end_date_str, platform, store_ids
@@ -897,9 +925,9 @@ def load_kpi_data_individual(start_date_str: str, end_date_str: str, platform: s
         return {'wow_data': {}, 'error': str(e)}
 
 def load_mom_data_individual(platform: str) -> Dict[str, Any]:
-    """Load MoM data individually"""
+    """Load MoM data individually - using positive operators only"""
     try:
-        mom_data = st.session_state.bigquery_client.get_mom_data(platform)
+        mom_data = st.session_state.bigquery_client.get_positive_operators_mom_data(platform)
         return {'mom_data': mom_data, 'error': None}
     except Exception as e:
         return {'mom_data': {}, 'error': str(e)}
@@ -921,11 +949,14 @@ def render_kpi_widgets(wow_data: Dict, mom_data: Dict,
         elif wow_data:
             current_sales = wow_data.get('current_sales', 0)
             delta_pct = wow_data.get('sales_delta_percent', 0)
+            current_dates = wow_data.get('current_period_dates', '')
+            prev_dates = wow_data.get('previous_period_dates', '')
+            positive_ops = wow_data.get('positive_operators_count', 0)
             create_metric_card(
                 "Sales",
                 format_currency(current_sales),
                 format_percentage(delta_pct),
-                f"vs Previous Week"
+                f"vs Previous Week<br><small>{current_dates} vs {prev_dates}</small>"
             )
         else:
             create_metric_card("Sales", "$0.00", "No Data", "vs Previous Week")
@@ -938,11 +969,14 @@ def render_kpi_widgets(wow_data: Dict, mom_data: Dict,
         elif mom_data:
             current_sales = mom_data.get('current_month_sales', 0)
             delta_pct = mom_data.get('mom_sales_delta_percent', 0)
+            current_dates = mom_data.get('current_period_dates', '')
+            prev_dates = mom_data.get('previous_period_dates', '')
+            positive_ops = mom_data.get('positive_operators_count', 0)
             create_metric_card(
                 "Sales",
                 format_currency(current_sales),
                 format_percentage(delta_pct),
-                f"vs Last Month"
+                f"vs Last Month<br><small>{current_dates} vs {prev_dates}</small>"
             )
         else:
             create_metric_card("Sales", "$0.00", "No Data", "vs Last Month")
@@ -1011,7 +1045,12 @@ def render_operator_summary_table(operator_data: pd.DataFrame, loading: bool = F
             st.write("- Verify the selected operators have valid DoorDash Store IDs")
         return
     
-    st.subheader("🏢 Operator Performance Summary")
+    # Get and display max date
+    max_date = get_max_date_for_platform(st.session_state.selected_platform)
+    if max_date:
+        st.subheader(f"🏢 Operator Performance Summary (Data as of: {max_date})")
+    else:
+        st.subheader("🏢 Operator Performance Summary")
     
     # Format the data for display
     display_data = operator_data.copy()
@@ -1027,9 +1066,19 @@ def render_operator_summary_table(operator_data: pd.DataFrame, loading: bool = F
     column_order = ['rank', 'operator_name', 'total_sales', 'total_orders', 'avg_roas', 'wow_sales_delta_percent', 'mom_sales_delta_percent']
     display_data = display_data[column_order]
     
+    # Add row styling for low WoW performance
+    def style_low_wow_rows(row):
+        wow_percent = safe_float(row['wow_sales_delta_percent'])
+        if wow_percent < 5 and wow_percent != 0:
+            return ['background-color: #dc2626; color: #ffffff'] * len(row)
+        return [''] * len(row)
+    
+    # Apply styling to the dataframe
+    styled_data = display_data.style.apply(style_low_wow_rows, axis=1)
+    
     # Create clickable rows for drilldown
     selected_rows = st.dataframe(
-        display_data,
+        styled_data,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "operator_name": st.column_config.TextColumn("Operator", width="large"),
@@ -1071,7 +1120,12 @@ def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False)
         st.warning("No store data available")
         return
     
-    st.subheader("🏪 Store-wise Performance Breakdown")
+    # Get and display max date
+    max_date = get_max_date_for_platform(st.session_state.selected_platform)
+    if max_date:
+        st.subheader(f"🏪 Store-wise Performance Breakdown (Data as of: {max_date})")
+    else:
+        st.subheader("🏪 Store-wise Performance Breakdown")
     
     # Format the data for display
     display_data = store_data.copy()
@@ -1087,9 +1141,19 @@ def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False)
     column_order = ['rank', 'STORE_ID', 'STORE_NAME', 'total_sales', 'total_orders', 'avg_roas', 'wow_sales_delta_percent', 'mom_sales_delta_percent']
     display_data = display_data[column_order]
     
+    # Add row styling for low WoW performance
+    def style_low_wow_rows(row):
+        wow_percent = safe_float(row['wow_sales_delta_percent'])
+        if wow_percent < 5 and wow_percent != 0:
+            return ['background-color: #dc2626; color: #ffffff'] * len(row)
+        return [''] * len(row)
+    
+    # Apply styling to the dataframe
+    styled_data = display_data.style.apply(style_low_wow_rows, axis=1)
+    
     # Create clickable rows for drilldown
     selected_rows = st.dataframe(
-        display_data,
+        styled_data,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "STORE_ID": st.column_config.TextColumn("Store ID", width="medium"),
@@ -1139,7 +1203,12 @@ def render_campaign_breakdown(campaign_data: pd.DataFrame):
         st.warning("No campaign data available")
         return
     
-    st.subheader("📊 Campaign Performance Breakdown")
+    # Get and display max date
+    max_date = get_max_date_for_platform(st.session_state.selected_platform)
+    if max_date:
+        st.subheader(f"📊 Campaign Performance Breakdown (Data as of: {max_date})")
+    else:
+        st.subheader("📊 Campaign Performance Breakdown")
     
     # Format the data for display
     display_data = campaign_data.copy()
@@ -1197,8 +1266,18 @@ def render_campaign_breakdown(campaign_data: pd.DataFrame):
     if 'mom_sales_delta_percent' in display_data.columns:
         column_config['mom_sales_delta_percent'] = st.column_config.TextColumn('MoM %', width='small')
     
+    # Add row styling for low WoW performance
+    def style_low_wow_rows(row):
+        wow_percent = safe_float(row.get('wow_sales_delta_percent', 0))
+        if wow_percent < 5 and wow_percent != 0:
+            return ['background-color: #dc2626; color: #ffffff'] * len(row)
+        return [''] * len(row)
+    
+    # Apply styling to the dataframe
+    styled_data = display_data.style.apply(style_low_wow_rows, axis=1)
+    
     st.dataframe(
-        display_data,
+        styled_data,
         use_container_width=True,
         hide_index=True,
         column_config=column_config
@@ -1510,6 +1589,12 @@ def main():
         selected_operator_stores = target_operators_data.get(st.session_state.selected_operator, [])
         
         if selected_operator_stores:
+            # Get max date for the platform
+            max_date = get_max_date_for_platform(st.session_state.selected_platform)
+            if not max_date:
+                st.error("Could not determine max date for store data loading")
+                return
+            
             # Load store data for the selected operator's stores only
             if st.session_state.selected_platform == "ubereats":
                 # For UberEats, get all available data without date filters
@@ -1518,7 +1603,7 @@ def main():
                 )
             else:
                 selected_operator_store_data = st.session_state.bigquery_client.get_operator_wise_data(
-                    start_date_str, end_date_str, selected_operator_stores
+                    max_date, max_date, selected_operator_stores
                 )
             
             # Only show warning if no data found
@@ -1537,7 +1622,7 @@ def main():
                     st.warning("• Store IDs don't exist in BigQuery table")
                     st.warning("• No campaign data for these stores")
                     st.warning("• Data sync issues between CSV and BigQuery")
-                    st.info(f"**Latest available data:** {date.today() - timedelta(days=2)}")
+                    st.info(f"**Latest available data:** 2025-09-10")
                     st.info(f"**Dashboard date:** {start_date_str}")
             else:
                 # Send alert for stores with low WoW performance

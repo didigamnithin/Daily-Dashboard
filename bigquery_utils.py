@@ -42,46 +42,252 @@ class BigQueryClient:
             st.error(f"Query execution failed: {str(e)}")
             return pd.DataFrame()
     
+    def get_max_date(self, platform: str = "doordash") -> str:
+        """Get the maximum date available in the database"""
+        try:
+            if platform.lower() == "doordash":
+                query = """
+                SELECT MAX(PARSE_DATE('%Y-%m-%d', DATE)) as max_date
+                FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
+                WHERE DATE IS NOT NULL
+                """
+            else:
+                query = """
+                SELECT MAX(DATE) as max_date
+                FROM `todc-marketing.merchant_portal_upload.ue_raw_offers_campaigns`
+                WHERE DATE IS NOT NULL
+                """
+            
+            df = self.execute_query(query)
+            if not df.empty and not df['max_date'].iloc[0] is None:
+                max_date_value = df['max_date'].iloc[0]
+                # Handle both datetime and date objects
+                if hasattr(max_date_value, 'strftime'):
+                    return max_date_value.strftime("%Y-%m-%d")
+                else:
+                    return str(max_date_value)
+            return None
+        except Exception as e:
+            st.error(f"Error getting max date: {e}")
+            return None
+    
     def get_wow_data(self, start_date: str, end_date: str, platform: str = "doordash", store_ids: list = None) -> Dict:
-        """Get Week over Week data"""
+        """Get Week over Week data - 7-day period vs previous 7-day period, excluding operators with WoW < -40%"""
         # Parse the provided dates
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
         
-        # Calculate previous week (7 days before current week)
-        prev_start_dt = start_dt - timedelta(days=7)
-        prev_end_dt = end_dt - timedelta(days=7)
+        # Calculate 7-day periods
+        # Current period: end_date to 7 days back
+        current_start_dt = end_dt - timedelta(days=6)  # 7 days total (inclusive)
+        current_end_dt = end_dt
         
+        # Previous period: 7 days before current period
+        prev_end_dt = current_start_dt - timedelta(days=1)
+        prev_start_dt = prev_end_dt - timedelta(days=6)  # 7 days total (inclusive)
+        
+        current_start_date = current_start_dt.strftime("%Y-%m-%d")
+        current_end_date = current_end_dt.strftime("%Y-%m-%d")
         prev_start_date = prev_start_dt.strftime("%Y-%m-%d")
         prev_end_date = prev_end_dt.strftime("%Y-%m-%d")
         
+        # Use the filtered WoW query that excludes operators with WoW < -20%
         if platform.lower() == "doordash":
-            query = self._get_dd_wow_query(store_ids)
+            query = self._get_dd_wow_query_filtered(store_ids)
         else:
-            query = self._get_ue_wow_query(store_ids)
+            query = self._get_ue_wow_query_filtered(store_ids)
         
         # Replace placeholders in query
         query = query.format(
-            start_date=start_date,
-            end_date=end_date,
+            start_date=current_start_date,
+            end_date=current_end_date,
             prev_start_date=prev_start_date,
             prev_end_date=prev_end_date
         )
         
         df = self.execute_query(query)
         if not df.empty:
-            return df.iloc[0].to_dict()
+            result = df.iloc[0].to_dict()
+            # Add calculation dates for display
+            result['current_period_dates'] = f"{current_start_date} to {current_end_date}"
+            result['previous_period_dates'] = f"{prev_start_date} to {prev_end_date}"
+            return result
         return {}
     
     def get_mom_data(self, platform: str = "doordash") -> Dict:
-        """Get Month over Month data"""
+        """Get Month over Month data - this month till date over same dates last month"""
         if platform.lower() == "doordash":
             query = self._get_mom_query()
         else:
             query = self._get_ue_mom_query()
         df = self.execute_query(query)
         if not df.empty:
-            return df.iloc[0].to_dict()
+            result = df.iloc[0].to_dict()
+            # Add calculation dates for display
+            result['current_period_dates'] = "Sep 1 to Sep 10"  # This month till date
+            result['previous_period_dates'] = "Aug 1 to Aug 10"  # Same dates last month
+            return result
+        return {}
+    
+    def get_positive_operators_wow_data(self, start_date: str, end_date: str, platform: str = "doordash") -> Dict:
+        """Get WoW data aggregated only from operators with positive WoW performance"""
+        # Parse the provided dates
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # Calculate 7-day periods
+        # Current period: end_date to 7 days back
+        current_start_dt = end_dt - timedelta(days=6)  # 7 days total (inclusive)
+        current_end_dt = end_dt
+        
+        # Previous period: 7 days before current period
+        prev_end_dt = current_start_dt - timedelta(days=1)
+        prev_start_dt = prev_end_dt - timedelta(days=6)  # 7 days total (inclusive)
+        
+        current_start_date = current_start_dt.strftime("%Y-%m-%d")
+        current_end_date = current_end_dt.strftime("%Y-%m-%d")
+        prev_start_date = prev_start_dt.strftime("%Y-%m-%d")
+        prev_end_date = prev_end_dt.strftime("%Y-%m-%d")
+        
+        query = """
+        WITH operator_performance AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as current_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as current_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{start_date}' AND '{end_date}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+          GROUP BY a.`Business Name`
+        ),
+        operator_previous_performance AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{prev_start_date}' AND '{prev_end_date}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+          GROUP BY a.`Business Name`
+        ),
+        operator_wow AS (
+          SELECT 
+            c.operator_name,
+            c.current_sales,
+            c.current_orders,
+            COALESCE(p.prev_sales, 0) as prev_sales,
+            COALESCE(p.prev_orders, 0) as prev_orders,
+            CASE 
+              WHEN COALESCE(p.prev_sales, 0) > 0 
+              THEN ((c.current_sales - COALESCE(p.prev_sales, 0)) / COALESCE(p.prev_sales, 0)) * 100
+              ELSE 0 
+            END as wow_sales_delta_percent
+          FROM operator_performance c
+          LEFT JOIN operator_previous_performance p ON c.operator_name = p.operator_name
+        )
+        SELECT 
+          SUM(current_sales) as current_sales,
+          SUM(prev_sales) as prev_sales,
+          SUM(current_orders) as current_orders,
+          SUM(prev_orders) as prev_orders,
+          COUNT(*) as positive_operators_count,
+          CASE 
+            WHEN SUM(prev_sales) > 0 
+            THEN ((SUM(current_sales) - SUM(prev_sales)) / SUM(prev_sales)) * 100
+            ELSE 0 
+          END as sales_delta_percent
+        FROM operator_wow
+        WHERE wow_sales_delta_percent > 0
+        """.format(
+            start_date=current_start_date,
+            end_date=current_end_date,
+            prev_start_date=prev_start_date,
+            prev_end_date=prev_end_date
+        )
+        
+        df = self.execute_query(query)
+        if not df.empty:
+            result = df.iloc[0].to_dict()
+            result['current_period_dates'] = f"{current_start_date} to {current_end_date}"
+            result['previous_period_dates'] = f"{prev_start_date} to {prev_end_date}"
+            return result
+        return {}
+    
+    def get_positive_operators_mom_data(self, platform: str = "doordash") -> Dict:
+        """Get MoM data aggregated only from operators with positive MoM performance"""
+        query = """
+        WITH operator_current_month AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as current_month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as current_month_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-09-01' AND '2025-09-10'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+          GROUP BY a.`Business Name`
+        ),
+        operator_previous_month AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_month_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_month_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-08-01' AND '2025-08-10'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+          GROUP BY a.`Business Name`
+        ),
+        operator_mom AS (
+          SELECT 
+            c.operator_name,
+            c.current_month_sales,
+            c.current_month_orders,
+            COALESCE(p.prev_month_sales, 0) as prev_month_sales,
+            COALESCE(p.prev_month_orders, 0) as prev_month_orders,
+            CASE 
+              WHEN COALESCE(p.prev_month_sales, 0) > 0 
+              THEN ((c.current_month_sales - COALESCE(p.prev_month_sales, 0)) / COALESCE(p.prev_month_sales, 0)) * 100
+              ELSE 0 
+            END as mom_sales_delta_percent
+          FROM operator_current_month c
+          LEFT JOIN operator_previous_month p ON c.operator_name = p.operator_name
+        )
+        SELECT 
+          SUM(current_month_sales) as current_month_sales,
+          SUM(prev_month_sales) as prev_month_sales,
+          SUM(current_month_orders) as current_month_orders,
+          SUM(prev_month_orders) as prev_month_orders,
+          COUNT(*) as positive_operators_count,
+          CASE 
+            WHEN SUM(prev_month_sales) > 0 
+            THEN ((SUM(current_month_sales) - SUM(prev_month_sales)) / SUM(prev_month_sales)) * 100
+            ELSE 0 
+          END as mom_sales_delta_percent
+        FROM operator_mom
+        WHERE mom_sales_delta_percent > 0
+        """
+        
+        df = self.execute_query(query)
+        if not df.empty:
+            result = df.iloc[0].to_dict()
+            result['current_period_dates'] = "Sep 1 to Sep 10"
+            result['previous_period_dates'] = "Aug 1 to Aug 10"
+            return result
         return {}
     
     def get_yoy_data(self, platform: str = "doordash") -> Dict:
@@ -764,13 +970,82 @@ class BigQueryClient:
           prev_orders,
           CASE 
             WHEN prev_sales > 0 THEN ((current_sales - prev_sales) / prev_sales) * 100
-            ELSE 0
+            ELSE 0 
           END as sales_delta_percent,
           CASE 
             WHEN prev_orders > 0 THEN ((current_orders - prev_orders) / prev_orders) * 100
-            ELSE 0
+            ELSE 0 
           END as orders_delta_percent
         FROM selected_period, previous_period
+        """
+    
+    def _get_dd_wow_query_filtered(self, store_ids: list = None) -> str:
+        """Get DoorDash WoW query excluding operators with WoW < -40%"""
+        store_filter = ""
+        if store_ids:
+            store_ids_str = "', '".join(store_ids)
+            store_filter = f"AND p.STORE_ID IN ('{store_ids_str}')"
+        
+        return f"""
+        WITH operator_performance AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as current_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as current_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+            {store_filter}
+          GROUP BY a.`Business Name`
+        ),
+        operator_previous_performance AS (
+          SELECT 
+            a.`Business Name` as operator_name,
+            SUM(CAST(p.SALES AS FLOAT64)) as prev_sales,
+            SUM(CAST(p.ORDERS AS INT64)) as prev_orders
+          FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
+          JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
+            ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
+            AND p.SALES IS NOT NULL
+            AND p.SALES != 'null'
+            AND p.SALES != ''
+            {store_filter}
+          GROUP BY a.`Business Name`
+        ),
+        operator_wow AS (
+          SELECT 
+            COALESCE(op.operator_name, opp.operator_name) as operator_name,
+            COALESCE(op.current_sales, 0) as current_sales,
+            COALESCE(op.current_orders, 0) as current_orders,
+            COALESCE(opp.prev_sales, 0) as prev_sales,
+            COALESCE(opp.prev_orders, 0) as prev_orders,
+            CASE 
+              WHEN COALESCE(opp.prev_sales, 0) > 0 THEN ((COALESCE(op.current_sales, 0) - COALESCE(opp.prev_sales, 0)) / COALESCE(opp.prev_sales, 0)) * 100
+              ELSE 0 
+            END as wow_sales_delta_percent
+          FROM operator_performance op
+          FULL OUTER JOIN operator_previous_performance opp ON op.operator_name = opp.operator_name
+        )
+        SELECT 
+          SUM(current_sales) as current_sales,
+          SUM(prev_sales) as prev_sales,
+          SUM(current_orders) as current_orders,
+          SUM(prev_orders) as prev_orders,
+          CASE 
+            WHEN SUM(prev_sales) > 0 THEN ((SUM(current_sales) - SUM(prev_sales)) / SUM(prev_sales)) * 100
+            ELSE 0 
+          END as sales_delta_percent,
+          CASE 
+            WHEN SUM(prev_orders) > 0 THEN ((SUM(current_orders) - SUM(prev_orders)) / SUM(prev_orders)) * 100
+            ELSE 0 
+          END as orders_delta_percent
+        FROM operator_wow
+        WHERE wow_sales_delta_percent >= -40
         """
     
     def _get_ue_wow_query(self, store_ids: list = None) -> str:
@@ -823,8 +1098,73 @@ class BigQueryClient:
         FROM selected_period_ue, previous_period_ue
         """
     
+    def _get_ue_wow_query_filtered(self, store_ids: list = None) -> str:
+        """Get UberEats WoW query excluding operators with WoW < -40%"""
+        store_filter = ""
+        if store_ids:
+            store_ids_str = "', '".join(store_ids)
+            store_filter = f"AND STORE_ID IN ('{store_ids_str}')"
+        
+        return f"""
+        WITH operator_performance AS (
+          SELECT 
+            STORE_ID as operator_name,
+            SUM(CAST(SALES AS FLOAT64)) as current_sales,
+            SUM(CAST(ORDERS AS INT64)) as current_orders
+          FROM `todc-marketing.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{start_date}}' AND '{{end_date}}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+            {store_filter}
+          GROUP BY STORE_ID
+        ),
+        operator_previous_performance AS (
+          SELECT 
+            STORE_ID as operator_name,
+            SUM(CAST(SALES AS FLOAT64)) as prev_sales,
+            SUM(CAST(ORDERS AS INT64)) as prev_orders
+          FROM `todc-marketing.merchant_portal_upload.ue_raw_promo_campaign_performance_for_non_storefront`
+          WHERE PARSE_DATE('%Y-%m-%d', DATE) BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
+            AND SALES IS NOT NULL
+            AND SALES != 'null'
+            AND SALES != ''
+            {store_filter}
+          GROUP BY STORE_ID
+        ),
+        operator_wow AS (
+          SELECT 
+            COALESCE(op.operator_name, opp.operator_name) as operator_name,
+            COALESCE(op.current_sales, 0) as current_sales,
+            COALESCE(op.current_orders, 0) as current_orders,
+            COALESCE(opp.prev_sales, 0) as prev_sales,
+            COALESCE(opp.prev_orders, 0) as prev_orders,
+            CASE 
+              WHEN COALESCE(opp.prev_sales, 0) > 0 THEN ((COALESCE(op.current_sales, 0) - COALESCE(opp.prev_sales, 0)) / COALESCE(opp.prev_sales, 0)) * 100
+              ELSE 0 
+            END as wow_sales_delta_percent
+          FROM operator_performance op
+          FULL OUTER JOIN operator_previous_performance opp ON op.operator_name = opp.operator_name
+        )
+        SELECT 
+          SUM(current_sales) as current_sales,
+          SUM(prev_sales) as prev_sales,
+          SUM(current_orders) as current_orders,
+          SUM(prev_orders) as prev_orders,
+          CASE 
+            WHEN SUM(prev_sales) > 0 THEN ((SUM(current_sales) - SUM(prev_sales)) / SUM(prev_sales)) * 100
+            ELSE 0 
+          END as sales_delta_percent,
+          CASE 
+            WHEN SUM(prev_orders) > 0 THEN ((SUM(current_orders) - SUM(prev_orders)) / SUM(prev_orders)) * 100
+            ELSE 0 
+          END as orders_delta_percent
+        FROM operator_wow
+        WHERE wow_sales_delta_percent >= -40
+        """
+    
     def _get_mom_query(self) -> str:
-        """Get Month over Month query using mcd_account_information table"""
+        """Get Month over Month query - this month till date over same dates last month"""
         return """
         WITH current_month AS (
           SELECT 
@@ -834,8 +1174,7 @@ class BigQueryClient:
           FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
           JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
             ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
-          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-09-01' AND '2025-09-10'
             AND p.SALES IS NOT NULL
             AND p.SALES != 'null'
             AND p.SALES != ''
@@ -848,8 +1187,7 @@ class BigQueryClient:
           FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
           JOIN `todc-marketing.merchant_portal_upload.mcd_account_information` a
             ON p.STORE_ID = CAST(a.`DoorDash Store ID` AS STRING)
-          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) >= DATE_TRUNC(DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH), MONTH)
-            AND PARSE_DATE('%Y-%m-%d', p.DATE) <= DATE_SUB(DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY), INTERVAL 1 MONTH)
+          WHERE PARSE_DATE('%Y-%m-%d', p.DATE) BETWEEN '2025-08-01' AND '2025-08-10'
             AND p.SALES IS NOT NULL
             AND p.SALES != 'null'
             AND p.SALES != ''

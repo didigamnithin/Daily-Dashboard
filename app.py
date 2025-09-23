@@ -26,7 +26,12 @@ st.set_page_config(
     page_title="Daily Dashboard - TODC Marketing Analytics",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': "TODC Marketing Analytics Dashboard"
+    }
 )
 
 # Force light mode
@@ -40,6 +45,9 @@ st.markdown("""
     .main .block-container {
         background-color: #ffffff;
         color: #000000;
+        max-width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
     }
     
     .sidebar .sidebar-content {
@@ -403,6 +411,63 @@ st.markdown("""
     /* Force all text to be black */
     [class*="text-"], [class*="color-"] {
         color: #000000 !important;
+    }
+    
+    /* Full width layout optimization */
+    .stApp > div {
+        max-width: 100% !important;
+    }
+    
+    .main .block-container {
+        max-width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    
+    /* Ensure dataframes use full width */
+    .stDataFrame {
+        width: 100% !important;
+    }
+    
+    /* Ensure charts use full width */
+    .js-plotly-plot {
+        width: 100% !important;
+    }
+    
+    /* Optimize column spacing */
+    .stColumn {
+        padding: 0.25rem !important;
+    }
+    
+    /* Full width for main content area */
+    [data-testid="stAppViewContainer"] {
+        max-width: 100% !important;
+    }
+    
+    /* Remove any container width restrictions */
+    .element-container {
+        max-width: 100% !important;
+    }
+    
+    /* Optimize sidebar width */
+    .css-1d391kg {
+        width: 20rem !important;
+    }
+    
+    /* Ensure main content area uses remaining space */
+    .main .block-container {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+    
+    /* Full width for all streamlit elements */
+    .stSelectbox, .stDateInput, .stMultiSelect, .stDataFrame, .stMetric {
+        width: 100% !important;
+    }
+    
+    /* Optimize plotly chart width */
+    .plotly-graph-div {
+        width: 100% !important;
     }
     
     /* Red row styling for low WoW performance */
@@ -868,8 +933,8 @@ def render_sidebar():
         # Platform Selection with Text Buttons
         st.subheader("Platform")
         
-        # Create two columns for platform selection
-        col1, col2 = st.columns(2)
+        # Create two columns for platform selection with better spacing
+        col1, col2 = st.columns([1, 1], gap="large")
         
         with col1:
             # DoorDash selection
@@ -939,7 +1004,8 @@ def render_kpi_widgets(wow_data: Dict, mom_data: Dict,
     """Render KPI widgets for WoW and MoM with individual loading states"""
     st.subheader("📈 Key Performance Indicators")
     
-    col1, col2 = st.columns(2)
+    # Use wider columns for better space utilization
+    col1, col2 = st.columns([1, 1], gap="large")
     
     with col1:
         st.markdown("### Week over Week")

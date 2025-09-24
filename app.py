@@ -557,34 +557,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_data
 def load_business_names():
-    """Load unique business names from BigQuery"""
+    """Load unique business names from CSV"""
     try:
         if not st.session_state.bigquery_client:
             return []
             
-        query = """
-        SELECT DISTINCT `Business Name`
-        FROM `todc-marketing.merchant_portal_upload.mcd_account_information`
-        WHERE `Business Name` IS NOT NULL
-        ORDER BY `Business Name`
-        """
-        
-        df = st.session_state.bigquery_client.execute_query(query)
-        
-        # Get unique business names and sort them
-        business_names = df['Business Name'].dropna().unique()
-        business_names = sorted([name.strip() for name in business_names if name.strip()])
+        # Get business names from the CSV loaded in BigQuery client
+        business_names = st.session_state.bigquery_client.get_all_business_names()
         
         return business_names
     except Exception as e:
-        st.error(f"Error loading business names from BigQuery: {e}")
+        st.error(f"Error loading business names from CSV: {e}")
         return []
 
-@st.cache_data
 def get_store_ids_for_operators(selected_operators):
-    """Get DoorDash Store IDs for selected operators from BigQuery"""
+    """Get DoorDash Store IDs for selected operators from CSV"""
     try:
         if not selected_operators or "All" in selected_operators:
             return None  # No filtering needed
@@ -592,93 +580,41 @@ def get_store_ids_for_operators(selected_operators):
         if not st.session_state.bigquery_client:
             return None
             
-        # Use a safer approach - get all data and filter in Python
-        # This avoids SQL injection issues with special characters
-        query = """
-        SELECT `Business Name`, `DoorDash Store ID`
-        FROM `todc-marketing.merchant_portal_upload.mcd_account_information`
-        WHERE `Business Name` IS NOT NULL 
-            AND `DoorDash Store ID` IS NOT NULL
-        """
+        # Get store IDs for each selected operator from CSV
+        all_store_ids = []
+        for operator in selected_operators:
+            store_ids = st.session_state.bigquery_client.get_store_ids_by_business_name(operator)
+            all_store_ids.extend(store_ids)
         
-        df = st.session_state.bigquery_client.execute_query(query)
+        # Remove duplicates and return
+        unique_store_ids = list(set(all_store_ids))
+        return unique_store_ids if unique_store_ids else None
         
-        # Filter by selected operators in Python (safer than SQL)
-        if not df.empty:
-            # Filter rows where Business Name is in selected_operators
-            filtered_df = df[df['Business Name'].isin(selected_operators)]
-            
-            # Get unique DoorDash Store IDs with proper validation
-            store_ids = []
-            for sid in filtered_df['DoorDash Store ID'].dropna().unique():
-                try:
-                    if pd.isna(sid) or str(sid).strip() == '' or str(sid).strip().lower() == 'nan':
-                        continue
-                    store_id_str = str(int(float(sid))).strip()
-                    if store_id_str and store_id_str not in store_ids:
-                        store_ids.append(store_id_str)
-                except (ValueError, TypeError):
-                    # Skip invalid store IDs
-                    continue
-            
-            return store_ids if store_ids else None
-        else:
-            return None
     except Exception as e:
-        st.error(f"Error loading store IDs from BigQuery: {e}")
+        st.error(f"Error loading store IDs from CSV: {e}")
         return None
 
-@st.cache_data
 def get_operators_with_store_ids():
-    """Get all unique operators with their store IDs from BigQuery"""
+    """Get all unique operators with their store IDs from CSV"""
     try:
         if not st.session_state.bigquery_client:
             return {}
             
-        query = """
-        SELECT 
-            `Business Name`,
-            `DoorDash Store ID`
-        FROM `todc-marketing.merchant_portal_upload.mcd_account_information`
-        WHERE `Business Name` IS NOT NULL 
-            AND `DoorDash Store ID` IS NOT NULL
-        ORDER BY `Business Name`, `DoorDash Store ID`
-        """
+        # Get all business names from CSV
+        business_names = st.session_state.bigquery_client.get_all_business_names()
         
-        df = st.session_state.bigquery_client.execute_query(query)
-        
-        # Group by Business Name and get all store IDs for each operator
+        # Build operator data dictionary
         operator_data = {}
-        for _, row in df.iterrows():
-            business_name = row['Business Name']
-            store_id = row['DoorDash Store ID']
-            
-            if pd.notna(business_name) and pd.notna(store_id):
-                business_name = business_name.strip()
-                
-                # Safely convert store_id to string, handling non-numeric values
-                try:
-                    if pd.isna(store_id) or str(store_id).strip() == '' or str(store_id).strip().lower() == 'nan':
-                        continue
-                    store_id_str = str(int(float(store_id))).strip()
-                    if not store_id_str:
-                        continue
-                except (ValueError, TypeError):
-                    # Skip invalid store IDs
-                    continue
-                
-                if business_name not in operator_data:
-                    operator_data[business_name] = []
-                
-                if store_id_str not in operator_data[business_name]:
-                    operator_data[business_name].append(store_id_str)
+        for business_name in business_names:
+            store_ids = st.session_state.bigquery_client.get_store_ids_by_business_name(business_name)
+            if store_ids:
+                operator_data[business_name] = store_ids
         
         return operator_data
     except Exception as e:
-        st.error(f"Error loading operators data from BigQuery: {e}")
+        st.error(f"Error loading operators data from CSV: {e}")
         return {}
 
-@st.cache_data
 def get_max_date_for_platform(platform: str):
     """Get the maximum date available for the given platform"""
     try:
@@ -690,7 +626,6 @@ def get_max_date_for_platform(platform: str):
         return None
 
 
-@st.cache_data
 def get_store_data_for_operator(operator_name: str, start_date: str, end_date: str):
     """Get store-level data for a specific operator"""
     try:
@@ -716,7 +651,6 @@ def get_store_data_for_operator(operator_name: str, start_date: str, end_date: s
         st.error(f"Error loading store data for {operator_name}: {e}")
         return pd.DataFrame()
 
-@st.cache_data
 def get_campaign_data_for_store(store_id: str, start_date: str, end_date: str):
     """Get campaign-level data for a specific store"""
     try:
@@ -980,19 +914,17 @@ def render_sidebar():
         return start_date, end_date, selected_businesses
 
 def load_kpi_data_individual(start_date_str: str, end_date_str: str, platform: str, store_ids: list) -> Dict[str, Any]:
-    """Load KPI data individually - WoW uses all operators, MoM uses positive operators only"""
+    """Load KPI data individually - WoW and MoM use all stores (no store filters)"""
     try:
-        wow_data = st.session_state.bigquery_client.get_wow_data(
-            start_date_str, end_date_str, platform, store_ids
-        )
+        wow_data = st.session_state.bigquery_client.get_wow_data()
         return {'wow_data': wow_data, 'error': None}
     except Exception as e:
         return {'wow_data': {}, 'error': str(e)}
 
 def load_mom_data_individual(platform: str) -> Dict[str, Any]:
-    """Load MoM data individually - using positive operators only"""
+    """Load MoM data individually - using all stores (no store filters)"""
     try:
-        mom_data = st.session_state.bigquery_client.get_positive_operators_mom_data(platform)
+        mom_data = st.session_state.bigquery_client.get_mom_data()
         return {'mom_data': mom_data, 'error': None}
     except Exception as e:
         return {'mom_data': {}, 'error': str(e)}
@@ -1135,7 +1067,7 @@ def render_operator_summary_table(operator_data: pd.DataFrame, loading: bool = F
     # Add row styling for low WoW performance
     def style_low_wow_rows(row):
         wow_percent = safe_float(row['wow_sales_delta_percent'])
-        if wow_percent < 5 and wow_percent != 0:
+        if wow_percent < -25 and wow_percent != 0:
             return ['background-color: #dc2626; color: #ffffff'] * len(row)
         return [''] * len(row)
     
@@ -1210,7 +1142,7 @@ def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False)
     # Add row styling for low WoW performance
     def style_low_wow_rows(row):
         wow_percent = safe_float(row['wow_sales_delta_percent'])
-        if wow_percent < 5 and wow_percent != 0:
+        if wow_percent < -25 and wow_percent != 0:
             return ['background-color: #dc2626; color: #ffffff'] * len(row)
         return [''] * len(row)
     
@@ -1263,18 +1195,36 @@ def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False)
         st.success(f"🔍 Selected store: **{selected_store_display}** - Loading campaign details...")
         # Don't call st.rerun() - let the main function handle the display
 
-def render_campaign_breakdown(campaign_data: pd.DataFrame):
-    """Render campaign-level breakdown table"""
-    if campaign_data.empty:
-        st.warning("No campaign data available")
-        return
-    
+def render_campaign_breakdown(todc_campaign_data: pd.DataFrame, corporate_campaign_data: pd.DataFrame):
+    """Render campaign-level breakdown tables side by side"""
     # Get and display max date
     max_date = get_max_date_for_platform(st.session_state.selected_platform)
     if max_date:
         st.subheader(f"📊 Campaign Performance Breakdown (Data as of: {max_date})")
     else:
         st.subheader("📊 Campaign Performance Breakdown")
+    
+    # Create two columns for side-by-side display
+    col1, col2 = st.columns(2)
+    
+    # TODC Campaigns Table (Left Column)
+    with col1:
+        st.markdown("### 🏢 TODC Campaigns")
+        if todc_campaign_data.empty:
+            st.warning("No TODC campaign data available")
+        else:
+            render_single_campaign_table(todc_campaign_data, "TODC")
+    
+    # Corporate Campaigns Table (Right Column)
+    with col2:
+        st.markdown("### 🏛️ Corporate Campaigns")
+        if corporate_campaign_data.empty:
+            st.warning("No Corporate campaign data available")
+        else:
+            render_single_campaign_table(corporate_campaign_data, "Corporate")
+
+def render_single_campaign_table(campaign_data: pd.DataFrame, campaign_type: str):
+    """Render a single campaign table with formatting"""
     
     # Format the data for display
     display_data = campaign_data.copy()
@@ -1425,11 +1375,11 @@ def send_dashboard_summary_on_load(wow_data: Dict, mom_data: Dict, start_date_st
         st.info("ℹ️ Dashboard summary already sent to Slack today")
 
 def send_operator_alert(operator_name: str, store_data: pd.DataFrame):
-    """Send alert for stores with less than 5% WoW"""
+    """Send alert for stores with less than -25% WoW"""
     if not st.session_state.slack_notifier or store_data.empty:
         return
     
-    # Filter stores with less than 5% WoW
+    # Filter stores with less than -25% WoW
     low_performing_stores = store_data[
         (store_data['wow_sales_delta_percent'] < 5) & 
         (store_data['wow_sales_delta_percent'] != 0)
@@ -1449,7 +1399,7 @@ def send_operator_alert(operator_name: str, store_data: pd.DataFrame):
 ⚠️ *Alert: Stores with Low WoW Performance*
 {platform_emoji} *Platform:* {platform_name}
 🏢 *Operator:* {operator_name}
-📊 *Stores with <5% WoW:* {store_count}
+📊 *Stores with <-25% WoW:* {store_count}
 
 🏪 *Store Names:*
 {chr(10).join([f"• {name}" for name in store_names])}
@@ -1469,11 +1419,11 @@ def send_operator_alert(operator_name: str, store_data: pd.DataFrame):
         st.error(f"Error sending operator alert: {e}")
 
 def send_store_alert(store_name: str, campaign_data: pd.DataFrame):
-    """Send alert for campaigns with less than 5% WoW"""
+    """Send alert for campaigns with less than -25% WoW"""
     if not st.session_state.slack_notifier or campaign_data.empty:
         return
     
-    # Filter campaigns with less than 5% WoW
+    # Filter campaigns with less than -25% WoW
     low_performing_campaigns = campaign_data[
         (campaign_data['wow_sales_delta_percent'] < 5) & 
         (campaign_data['wow_sales_delta_percent'] != 0)
@@ -1493,7 +1443,7 @@ def send_store_alert(store_name: str, campaign_data: pd.DataFrame):
 ⚠️ *Alert: Campaigns with Low WoW Performance*
 {platform_emoji} *Platform:* {platform_name}
 🏪 *Store:* {store_name}
-📊 *Campaigns with <5% WoW:* {campaign_count}
+📊 *Campaigns with <-25% WoW:* {campaign_count}
 
 🎯 *Campaign Names:*
 {chr(10).join([f"• {name}" for name in campaign_names])}
@@ -1513,7 +1463,7 @@ def send_store_alert(store_name: str, campaign_data: pd.DataFrame):
         st.error(f"Error sending store alert: {e}")
 
 def send_operator_performance_alert_on_load():
-    """Send alert for operators with WoW less than 5% on dashboard load"""
+    """Send alert for operators with WoW less than -25% on dashboard load"""
     if not st.session_state.slack_notifier or not st.session_state.operator_data_loaded:
         return
     
@@ -1524,7 +1474,7 @@ def send_operator_performance_alert_on_load():
         if operator_data.empty:
             return
         
-        # Filter operators with WoW less than 5%
+        # Filter operators with WoW less than -25%
         low_performing_operators = operator_data[
             (operator_data['wow_sales_delta_percent'] < 5) & 
             (operator_data['wow_sales_delta_percent'] != 0)
@@ -1541,7 +1491,7 @@ def send_operator_performance_alert_on_load():
         message = f"""
 ⚠️ *Alert: Operators with Low WoW Performance*
 {platform_emoji} *Platform:* {platform_name}
-📊 *Operators with <5% WoW:* {operator_count}
+📊 *Operators with <-25% WoW:* {operator_count}
 
 🏢 *Operator Names:*
 {chr(10).join([f"• {row['operator_name']} ({row['wow_sales_delta_percent']:+.1f}%)" for _, row in low_performing_operators.iterrows()])}
@@ -1668,8 +1618,9 @@ def main():
                     selected_operator_stores
                 )
             else:
-                selected_operator_store_data = st.session_state.bigquery_client.get_operator_wise_data(
-                    max_date, max_date, selected_operator_stores
+                # Use the new separate function for store-level data
+                selected_operator_store_data = st.session_state.bigquery_client.get_store_level_data_for_operator(
+                    st.session_state.selected_operator, selected_operator_stores
                 )
             
             # Only show warning if no data found
@@ -1704,16 +1655,21 @@ def main():
         if st.session_state.selected_platform == "ubereats":
             # For UberEats, get all available campaign data without date filters
             campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns_all_time([st.session_state.selected_store])
+            # For UberEats, we'll use the same data for both tables since we don't have IS_SELF_SERVE_CAMPAIGN
+            todc_campaigns_data = campaigns_data
+            corporate_campaigns_data = campaigns_data
         else:
-            campaigns_data = st.session_state.bigquery_client.get_top_campaigns(30, [st.session_state.selected_store])
+            # Load both TODC and Corporate campaign data
+            todc_campaigns_data = st.session_state.bigquery_client.get_todc_campaigns(30, [st.session_state.selected_store])
+            corporate_campaigns_data = st.session_state.bigquery_client.get_corporate_campaigns(30, [st.session_state.selected_store])
         
-        # Send alert for campaigns with low WoW performance
-        if not campaigns_data.empty:
+        # Send alert for campaigns with low WoW performance (using TODC data for alerts)
+        if not todc_campaigns_data.empty:
             # Get store name from the campaign data
-            store_name = campaigns_data['STORE_NAME'].iloc[0] if 'STORE_NAME' in campaigns_data.columns else st.session_state.selected_store
-            send_store_alert(store_name, campaigns_data)
+            store_name = todc_campaigns_data['STORE_NAME'].iloc[0] if 'STORE_NAME' in todc_campaigns_data.columns else st.session_state.selected_store
+            send_store_alert(store_name, todc_campaigns_data)
         
-        render_campaign_breakdown(campaigns_data)
+        render_campaign_breakdown(todc_campaigns_data, corporate_campaigns_data)
     
     # Send dashboard summary to Slack on load (only once per session)
     if not st.session_state.get('slack_summary_sent', False):

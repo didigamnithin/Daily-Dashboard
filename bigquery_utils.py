@@ -131,7 +131,6 @@ class BigQueryClient:
         AND TRANSACTION_TYPE = 'Order'
         AND FINAL_ORDER_STATUS = 'Delivered'
         AND SUBTOTAL IS NOT NULL
-        AND BUSINESS_NAME = '5579'
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -1475,12 +1474,12 @@ class BigQueryClient:
             p.prev_orders,
             CASE 
                 WHEN p.prev_sales > 0 THEN ((c.current_sales - p.prev_sales) / p.prev_sales) * 100
-            ELSE 0 
-          END as sales_delta_percent,
-          CASE 
+                ELSE 0 
+            END as sales_delta_percent,
+            CASE 
                 WHEN p.prev_orders > 0 THEN ((c.current_orders - p.prev_orders) / p.prev_orders) * 100
-            ELSE 0 
-          END as orders_delta_percent
+                ELSE 0 
+            END as orders_delta_percent
         FROM current_week c, previous_week p
         """
     

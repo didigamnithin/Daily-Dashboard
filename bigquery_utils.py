@@ -99,6 +99,7 @@ class BigQueryClient:
                 SELECT MAX(PARSE_DATE('%Y-%m-%d', DATE)) as max_date
                 FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns`
                 WHERE DATE IS NOT NULL
+                
                 """
             else:
                 query = """
@@ -126,6 +127,11 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
+        AND BUSINESS_NAME = '5579'
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -177,6 +183,11 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
+        AND BUSINESS_ID = '5579'
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -253,6 +264,10 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'  
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -327,6 +342,7 @@ class BigQueryClient:
             COUNT(*) as campaign_days
           FROM `todc-marketing.merchant_portal_upload.dd_raw_promotion_campaigns` p
           WHERE p.DATE BETWEEN '{current_start_date}' AND '{current_end_date}'
+
             AND p.SALES IS NOT NULL
             AND p.SALES != 'null'
             AND p.SALES != ''
@@ -413,6 +429,10 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -577,6 +597,10 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -963,6 +987,10 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -1036,6 +1064,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{current_start_date}' AND '{current_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
             {store_filter}
             GROUP BY STORE_ID, STORE_NAME
         ),
@@ -1048,6 +1079,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{prev_start_date}' AND '{prev_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
             {store_filter}
             GROUP BY STORE_ID, STORE_NAME
         ),
@@ -1060,6 +1094,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{current_month_start_date}' AND '{current_month_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
             {store_filter}
             GROUP BY STORE_ID, STORE_NAME
         ),
@@ -1072,6 +1109,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{prev_month_start_date}' AND '{prev_month_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
             {store_filter}
             GROUP BY STORE_ID, STORE_NAME
         ),
@@ -1123,6 +1163,10 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -1197,6 +1241,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{current_start_date}' AND '{current_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 {store_filter}
             GROUP BY STORE_ID, STORE_NAME
             ),
@@ -1209,6 +1256,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{prev_start_date}' AND '{prev_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 {store_filter}
             GROUP BY STORE_ID, STORE_NAME
             ),
@@ -1221,6 +1271,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{current_month_start_date}' AND '{current_month_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 {store_filter}
             GROUP BY STORE_ID, STORE_NAME
             ),
@@ -1233,6 +1286,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{prev_month_start_date}' AND '{prev_month_end_date}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 {store_filter}
             GROUP BY STORE_ID, STORE_NAME
         ),
@@ -1285,6 +1341,11 @@ class BigQueryClient:
         max_date_query = """
         SELECT MAX(TIMESTAMP_UTC_DATE) as max_date
         FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
+        WHERE BUSINESS_ID = '5579'
+        AND TRANSACTION_TYPE = 'Order'
+        AND FINAL_ORDER_STATUS = 'Delivered'
+        AND SUBTOTAL IS NOT NULL
+        AND BUSINESS_ID = '5579'
         """
         max_date_result = self.execute_query(max_date_query)
         if max_date_result.empty:
@@ -1392,6 +1453,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{current_start_date}}' AND '{{current_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
         ),
         previous_week AS (
           SELECT 
@@ -1400,6 +1464,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
         )
         SELECT 
             c.current_sales,
@@ -1427,6 +1494,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{current_start_date}}' AND '{{current_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
         ),
         previous_month AS (
             SELECT 
@@ -1435,6 +1505,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
         )
         SELECT 
             c.current_month_sales,
@@ -1464,6 +1537,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{current_start_date}}' AND '{{current_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 AND STORE_ID IN ('{store_ids_str}')
         ),
         previous_week AS (
@@ -1473,6 +1549,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{prev_start_date}}' AND '{{prev_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 AND STORE_ID IN ('{store_ids_str}')
             ),
             current_month AS (
@@ -1482,6 +1561,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{current_month_start_date}}' AND '{{current_month_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 AND STORE_ID IN ('{store_ids_str}')
             ),
             previous_month AS (
@@ -1491,6 +1573,9 @@ class BigQueryClient:
             FROM `todc-marketing.merchant_portal_upload.dd_raw_financials_detailed_transactions_us`
             WHERE TIMESTAMP_UTC_DATE BETWEEN '{{prev_month_start_date}}' AND '{{prev_month_end_date}}'
                 AND SUBTOTAL IS NOT NULL
+                AND FINAL_ORDER_STATUS = 'Delivered'
+                AND TRANSACTION_TYPE = 'Order'
+                AND BUSINESS_ID = '5579'
                 AND STORE_ID IN ('{store_ids_str}')
         ),
         avg_roas AS (

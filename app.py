@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv('slack.env')
 
 # Import custom modules
-from bigquery_utils import BigQueryClient
+from bigquery_orchestrator import BigQueryOrchestrator
 from slack_utils import SlackNotifier
 # Cache functionality removed
 import pandas as pd
@@ -560,11 +560,11 @@ st.markdown("""
 def load_business_names():
     """Load unique business names from CSV"""
     try:
-        if not st.session_state.bigquery_client:
+        if not st.session_state.bigquery_orchestrator:
             return []
             
-        # Get business names from the CSV loaded in BigQuery client
-        business_names = st.session_state.bigquery_client.get_all_business_names()
+        # Get business names from the CSV loaded in BigQuery orchestrator
+        business_names = st.session_state.bigquery_orchestrator.get_all_business_names()
         
         return business_names
     except Exception as e:
@@ -574,21 +574,11 @@ def load_business_names():
 def get_store_ids_for_operators(selected_operators):
     """Get DoorDash Store IDs for selected operators from CSV"""
     try:
-        if not selected_operators or "All" in selected_operators:
-            return None  # No filtering needed
-        
-        if not st.session_state.bigquery_client:
+        if not st.session_state.bigquery_orchestrator:
             return None
             
-        # Get store IDs for each selected operator from CSV
-        all_store_ids = []
-        for operator in selected_operators:
-            store_ids = st.session_state.bigquery_client.get_store_ids_by_business_name(operator)
-            all_store_ids.extend(store_ids)
-        
-        # Remove duplicates and return
-        unique_store_ids = list(set(all_store_ids))
-        return unique_store_ids if unique_store_ids else None
+        # Use orchestrator method to get store IDs
+        return st.session_state.bigquery_orchestrator.get_store_ids_for_operators(selected_operators)
         
     except Exception as e:
         st.error(f"Error loading store IDs from CSV: {e}")
@@ -597,20 +587,12 @@ def get_store_ids_for_operators(selected_operators):
 def get_operators_with_store_ids():
     """Get all unique operators with their store IDs from CSV"""
     try:
-        if not st.session_state.bigquery_client:
+        if not st.session_state.bigquery_orchestrator:
             return {}
             
-        # Get all business names from CSV
-        business_names = st.session_state.bigquery_client.get_all_business_names()
+        # Use orchestrator method to get operators with store IDs
+        return st.session_state.bigquery_orchestrator.get_operators_with_store_ids()
         
-        # Build operator data dictionary
-        operator_data = {}
-        for business_name in business_names:
-            store_ids = st.session_state.bigquery_client.get_store_ids_by_business_name(business_name)
-            if store_ids:
-                operator_data[business_name] = store_ids
-        
-        return operator_data
     except Exception as e:
         st.error(f"Error loading operators data from CSV: {e}")
         return {}
@@ -618,9 +600,9 @@ def get_operators_with_store_ids():
 def get_max_date_for_platform(platform: str):
     """Get the maximum date available for the given platform"""
     try:
-        if not st.session_state.bigquery_client:
+        if not st.session_state.bigquery_orchestrator:
             return None
-        return st.session_state.bigquery_client.get_max_date(platform)
+        return st.session_state.bigquery_orchestrator.get_max_date(platform)
     except Exception as e:
         st.error(f"Error getting max date: {e}")
         return None
@@ -629,24 +611,11 @@ def get_max_date_for_platform(platform: str):
 def get_store_data_for_operator(operator_name: str, start_date: str, end_date: str):
     """Get store-level data for a specific operator"""
     try:
-        # Get store IDs for the operator
-        operator_data = get_operators_with_store_ids()
-        if operator_name not in operator_data:
-            return pd.DataFrame()
-        
-        store_ids = operator_data[operator_name]
-        if not store_ids:
-            return pd.DataFrame()
-        
-        # Get store-wise data from BigQuery
-        if st.session_state.selected_platform == "ubereats":
-            return st.session_state.bigquery_client.get_ue_operator_wise_data(
-                start_date, end_date, store_ids
-            )
-        else:
-            return st.session_state.bigquery_client.get_operator_wise_data(
-                start_date, end_date, store_ids
-            )
+        # Use orchestrator to get store data for operator
+        results = st.session_state.bigquery_orchestrator.run_operator_drilldown_parallel(
+            operator_name, st.session_state.selected_platform
+        )
+        return results.get('store_data', pd.DataFrame())
     except Exception as e:
         st.error(f"Error loading store data for {operator_name}: {e}")
         return pd.DataFrame()
@@ -654,22 +623,18 @@ def get_store_data_for_operator(operator_name: str, start_date: str, end_date: s
 def get_campaign_data_for_store(store_id: str, start_date: str, end_date: str):
     """Get campaign-level data for a specific store"""
     try:
-        # Get campaign data for the store
-        if st.session_state.selected_platform == "ubereats":
-            return st.session_state.bigquery_client.get_ue_top_campaigns(
-                days=30, store_ids=[store_id]
-            )
-        else:
-            return st.session_state.bigquery_client.get_top_campaigns(
-                days=30, store_ids=[store_id]
-            )
+        # Use orchestrator to get campaign data for store
+        results = st.session_state.bigquery_orchestrator.run_store_drilldown_parallel(
+            store_id, st.session_state.selected_platform
+        )
+        return results.get('todc_campaigns', pd.DataFrame()), results.get('corporate_campaigns', pd.DataFrame())
     except Exception as e:
         st.error(f"Error loading campaign data for store {store_id}: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
 # Initialize session state
-if 'bigquery_client' not in st.session_state:
-    st.session_state.bigquery_client = None
+if 'bigquery_orchestrator' not in st.session_state:
+    st.session_state.bigquery_orchestrator = None
 if 'slack_notifier' not in st.session_state:
     st.session_state.slack_notifier = None
 if 'selected_platform' not in st.session_state:
@@ -701,13 +666,13 @@ if 'current_date_range' not in st.session_state:
 
 def initialize_clients():
     """Initialize BigQuery and Slack clients"""
-    # BigQuery client
+    # BigQuery orchestrator
     service_account_path = "todc-marketing-da349d76b96a.json"
     if os.path.exists(service_account_path):
         try:
-            st.session_state.bigquery_client = BigQueryClient(service_account_path)
+            st.session_state.bigquery_orchestrator = BigQueryOrchestrator(service_account_path)
         except Exception as e:
-            st.error(f"Failed to initialize BigQuery client: {str(e)}")
+            st.error(f"Failed to initialize BigQuery orchestrator: {str(e)}")
     
     # Slack notifier (webhook only)
     slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
@@ -729,52 +694,102 @@ def should_reload_data(platform: str, start_date: str, end_date: str) -> bool:
     return False
 
 def load_kpi_data_if_needed(platform: str, start_date: str, end_date: str, store_ids: list):
-    """Load KPI data only if needed"""
+    """Load KPI data only if needed using parallel execution with immediate display"""
     if not st.session_state.kpi_data_loaded or should_reload_data(platform, start_date, end_date):
-        with st.spinner("Loading KPI data..."):
-            # Load WoW data
-            wow_result = load_kpi_data_individual(start_date, end_date, platform, store_ids)
-            st.session_state.wow_data = wow_result['wow_data']
+        # Reset widget display flag for new data load
+        st.session_state.kpi_widgets_displayed = False
+        
+        # Create placeholders for immediate display
+        wow_placeholder = st.empty()
+        mom_placeholder = st.empty()
+        operator_placeholder = st.empty()
+        
+        # Show loading message
+        with st.spinner("Loading KPI data in parallel..."):
+            # Get all business names and store IDs first
+            business_names = st.session_state.bigquery_orchestrator.get_all_business_names()
+            operator_store_mapping = {}
+            for business_name in business_names:
+                store_ids = st.session_state.bigquery_orchestrator.get_store_ids_by_business_name(business_name)
+                if store_ids:
+                    operator_store_mapping[business_name] = store_ids
             
-            # Load MoM data
-            mom_result = load_mom_data_individual(platform)
-            st.session_state.mom_data = mom_result['mom_data']
+            # Get max date for date calculations
+            max_date = st.session_state.bigquery_orchestrator.get_max_date(platform)
+            if not max_date:
+                st.error("Could not determine max date")
+                return
+            
+            # Run only WoW and MoM queries in parallel (operator data loaded separately when needed)
+            import concurrent.futures
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit only WoW and MoM queries
+                wow_future = executor.submit(st.session_state.bigquery_orchestrator.wow_client.get_wow_data, platform)
+                mom_future = executor.submit(st.session_state.bigquery_orchestrator.mom_client.get_mom_data, platform)
+                
+                # Process results as they complete
+                wow_data = {}
+                mom_data = {}
+                
+                # Wait for WoW data and display immediately
+                try:
+                    wow_data = wow_future.result(timeout=60)
+                    st.session_state.wow_data = wow_data
+                    wow_placeholder.success("✅ WoW data loaded!")
+                    print("✅ WoW query completed")
+                    
+                except Exception as e:
+                    wow_placeholder.error(f"❌ WoW query failed: {e}")
+                    print(f"❌ WoW query failed: {e}")
+                
+                # Wait for MoM data and display immediately
+                try:
+                    mom_data = mom_future.result(timeout=60)
+                    st.session_state.mom_data = mom_data
+                    mom_placeholder.success("✅ MoM data loaded!")
+                    print("✅ MoM query completed")
+                    
+                except Exception as e:
+                    mom_placeholder.error(f"❌ MoM query failed: {e}")
+                    print(f"❌ MoM query failed: {e}")
+            
+            # Clear placeholders
+            wow_placeholder.empty()
+            mom_placeholder.empty()
+            operator_placeholder.empty()
             
             st.session_state.kpi_data_loaded = True
             st.session_state.current_platform = platform
             st.session_state.current_date_range = f"{start_date}_{end_date}"
 
 def load_operator_data_if_needed(platform: str, start_date: str, end_date: str, store_ids: list, selected_businesses: list):
-    """Load operator data only if needed - using max date for actual data"""
-    if not st.session_state.operator_data_loaded or should_reload_data(platform, start_date, end_date):
-        with st.spinner("Loading operator data..."):
-            # Get max date for the platform
-            max_date = get_max_date_for_platform(platform)
-            if not max_date:
-                st.error("Could not determine max date for data loading")
-                return
+    """Load operator data only if needed - stable caching approach"""
+    # Check if we need to load operator data
+    cache_key = f"operator_data_{platform}_{start_date}_{end_date}"
+    
+    # Only load if we don't have the data or if platform/date changed
+    if cache_key not in st.session_state or not hasattr(st.session_state, 'operator_summary_data') or st.session_state.operator_summary_data.empty:
+        # Load operator data only when needed (not upfront)
+        with st.spinner("Loading operator summary data..."):
+            business_names = st.session_state.bigquery_orchestrator.get_all_business_names()
+            operator_store_mapping = {}
+            for business_name in business_names:
+                store_ids = st.session_state.bigquery_orchestrator.get_store_ids_by_business_name(business_name)
+                if store_ids:
+                    operator_store_mapping[business_name] = store_ids
             
-            # Get operator data for the selected businesses
-            target_operators_data = get_operators_with_store_ids()
-            # Filter to only include selected businesses
-            filtered_operators_data = {k: v for k, v in target_operators_data.items() if k in selected_businesses}
-            
-            if platform == "ubereats":
-                st.session_state.operator_summary_data = st.session_state.bigquery_client.get_ue_operator_aggregated_data(
-                    max_date, max_date, filtered_operators_data
+            max_date = st.session_state.bigquery_orchestrator.get_max_date(platform)
+            if max_date:
+                operator_data = st.session_state.bigquery_orchestrator.operator_client.get_operator_aggregated_data(
+                    max_date, max_date, operator_store_mapping
                 )
-                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_ue_operator_wise_data_all_time(
-                    store_ids
-                )
-            else:
-                st.session_state.operator_summary_data = st.session_state.bigquery_client.get_operator_aggregated_data(
-                    max_date, max_date, filtered_operators_data
-                )
-                st.session_state.store_breakdown_data = st.session_state.bigquery_client.get_operator_wise_data(
-                    max_date, max_date, store_ids
-                )
-            
-            st.session_state.operator_data_loaded = True
+                st.session_state[cache_key] = operator_data
+                st.session_state.operator_summary_data = operator_data
+                st.session_state.operator_data_loaded = True
+    else:
+        # Use cached data - don't reload
+        st.session_state.operator_summary_data = st.session_state[cache_key]
 
 def format_currency(value) -> str:
     """Format currency values"""
@@ -859,6 +874,57 @@ def create_metric_card(title: str, value: str, delta: str = None, subtitle: str 
     """
     return st.markdown(card_html, unsafe_allow_html=True)
 
+def display_kpi_widgets_side_by_side(wow_data: dict = None, mom_data: dict = None):
+    """Display WoW and MoM widgets side by side in 2 columns"""
+    # Create columns for side-by-side display
+    col1, col2 = st.columns([1, 1], gap="large")
+    
+    with col1:
+        st.markdown("### Week over Week")
+        if wow_data:
+            current_sales = wow_data.get('current_sales', 0)
+            delta_pct = wow_data.get('sales_delta_percent', 0)
+            current_dates = wow_data.get('current_period_dates', '')
+            prev_dates = wow_data.get('previous_period_dates', '')
+            
+            create_metric_card(
+                "Sales",
+                format_currency(current_sales),
+                format_percentage(delta_pct),
+                f"vs Previous Week<br><small>{current_dates} vs {prev_dates}</small>"
+            )
+        else:
+            create_metric_card("Sales", "$0.00", "No Data", "vs Previous Week")
+    
+    with col2:
+        st.markdown("### Month over Month")
+        if mom_data:
+            current_sales = mom_data.get('current_month_sales', 0)
+            delta_pct = mom_data.get('mom_sales_delta_percent', 0)
+            current_dates = mom_data.get('current_period_dates', '')
+            prev_dates = mom_data.get('previous_period_dates', '')
+            
+            create_metric_card(
+                "Sales",
+                format_currency(current_sales),
+                format_percentage(delta_pct),
+                f"vs Last Month<br><small>{current_dates} vs {prev_dates}</small>"
+            )
+        else:
+            create_metric_card("Sales", "$0.00", "No Data", "vs Last Month")
+
+def display_wow_widget(wow_data: dict):
+    """Display WoW widget immediately when data is ready"""
+    # Just update session state - the main render function will handle display
+    st.session_state.wow_data = wow_data
+    st.success("✅ WoW data loaded!")
+
+def display_mom_widget(mom_data: dict):
+    """Display MoM widget immediately when data is ready"""
+    # Just update session state - the main render function will handle display
+    st.session_state.mom_data = mom_data
+    st.success("✅ MoM data loaded!")
+
 def render_sidebar():
     """Render the collapsible sidebar with filters"""
     with st.sidebar:
@@ -913,71 +979,59 @@ def render_sidebar():
         
         return start_date, end_date, selected_businesses
 
-def load_kpi_data_individual(start_date_str: str, end_date_str: str, platform: str, store_ids: list) -> Dict[str, Any]:
-    """Load KPI data individually - WoW and MoM use all stores (no store filters)"""
-    try:
-        wow_data = st.session_state.bigquery_client.get_wow_data()
-        return {'wow_data': wow_data, 'error': None}
-    except Exception as e:
-        return {'wow_data': {}, 'error': str(e)}
-
-def load_mom_data_individual(platform: str) -> Dict[str, Any]:
-    """Load MoM data individually - using all stores (no store filters)"""
-    try:
-        mom_data = st.session_state.bigquery_client.get_mom_data()
-        return {'mom_data': mom_data, 'error': None}
-    except Exception as e:
-        return {'mom_data': {}, 'error': str(e)}
+# These functions are no longer needed as data is loaded in parallel via orchestrator
 
 # YoY functionality removed
 
 def render_kpi_widgets(wow_data: Dict, mom_data: Dict, 
                       wow_loading: bool = False, mom_loading: bool = False):
-    """Render KPI widgets for WoW and MoM with individual loading states"""
-    st.subheader("📈 Key Performance Indicators")
-    
-    # Use wider columns for better space utilization
-    col1, col2 = st.columns([1, 1], gap="large")
-    
-    with col1:
-        st.markdown("### Week over Week")
-        if wow_loading:
-            with st.spinner("Loading WoW data..."):
-                pass
-        elif wow_data:
-            current_sales = wow_data.get('current_sales', 0)
-            delta_pct = wow_data.get('sales_delta_percent', 0)
-            current_dates = wow_data.get('current_period_dates', '')
-            prev_dates = wow_data.get('previous_period_dates', '')
-            positive_ops = wow_data.get('positive_operators_count', 0)
-            create_metric_card(
-                "Sales",
-                format_currency(current_sales),
-                format_percentage(delta_pct),
-                f"vs Previous Week<br><small>{current_dates} vs {prev_dates}</small>"
-            )
-        else:
-            create_metric_card("Sales", "$0.00", "No Data", "vs Previous Week")
-    
-    with col2:
-        st.markdown("### Month over Month")
-        if mom_loading:
-            with st.spinner("Loading MoM data..."):
-                pass
-        elif mom_data:
-            current_sales = mom_data.get('current_month_sales', 0)
-            delta_pct = mom_data.get('mom_sales_delta_percent', 0)
-            current_dates = mom_data.get('current_period_dates', '')
-            prev_dates = mom_data.get('previous_period_dates', '')
-            positive_ops = mom_data.get('positive_operators_count', 0)
-            create_metric_card(
-                "Sales",
-                format_currency(current_sales),
-                format_percentage(delta_pct),
-                f"vs Last Month<br><small>{current_dates} vs {prev_dates}</small>"
-            )
-        else:
-            create_metric_card("Sales", "$0.00", "No Data", "vs Last Month")
+    """Render KPI widgets for WoW and MoM - always show if data is available"""
+    # Always render KPI widgets if we have data, regardless of drilldown level
+    if wow_data or mom_data or wow_loading or mom_loading:
+        st.subheader("📈 Key Performance Indicators")
+        
+        # Use wider columns for better space utilization
+        col1, col2 = st.columns([1, 1], gap="large")
+        
+        with col1:
+            st.markdown("### Week over Week")
+            if wow_loading:
+                with st.spinner("Loading WoW data..."):
+                    pass
+            elif wow_data:
+                current_sales = wow_data.get('current_sales', 0)
+                delta_pct = wow_data.get('sales_delta_percent', 0)
+                current_dates = wow_data.get('current_period_dates', '')
+                prev_dates = wow_data.get('previous_period_dates', '')
+                positive_ops = wow_data.get('positive_operators_count', 0)
+                create_metric_card(
+                    "Sales",
+                    format_currency(current_sales),
+                    format_percentage(delta_pct),
+                    f"vs Previous Week<br><small>{current_dates} vs {prev_dates}</small>"
+                )
+            else:
+                create_metric_card("Sales", "$0.00", "No Data", "vs Previous Week")
+        
+        with col2:
+            st.markdown("### Month over Month")
+            if mom_loading:
+                with st.spinner("Loading MoM data..."):
+                    pass
+            elif mom_data:
+                current_sales = mom_data.get('current_month_sales', 0)
+                delta_pct = mom_data.get('mom_sales_delta_percent', 0)
+                current_dates = mom_data.get('current_period_dates', '')
+                prev_dates = mom_data.get('previous_period_dates', '')
+                positive_ops = mom_data.get('positive_operators_count', 0)
+                create_metric_card(
+                    "Sales",
+                    format_currency(current_sales),
+                    format_percentage(delta_pct),
+                    f"vs Last Month<br><small>{current_dates} vs {prev_dates}</small>"
+                )
+            else:
+                create_metric_card("Sales", "$0.00", "No Data", "vs Last Month")
     
 
 def render_trend_chart(trend_data: pd.DataFrame):
@@ -1103,8 +1157,14 @@ def render_operator_summary_table(operator_data: pd.DataFrame, loading: bool = F
         st.session_state.selected_operator = selected_operator
         st.session_state.selected_store = None  # Reset store selection
         
+        # Clear any existing store/campaign data to force reload
+        if 'selected_operator_store_data' in st.session_state:
+            del st.session_state.selected_operator_store_data
+        if 'selected_store_campaign_data' in st.session_state:
+            del st.session_state.selected_store_campaign_data
+        
         st.success(f"🔍 Selected operator: **{selected_operator}** - Loading store details...")
-        # Don't call st.rerun() - let the main function handle the display
+        # Don't call st.rerun() - let the main function handle the display without full reload
 
 def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False):
     """Render store-wise breakdown table with loading state"""
@@ -1192,8 +1252,12 @@ def render_store_wise_breakdown(store_data: pd.DataFrame, loading: bool = False)
         st.session_state.drilldown_level = "campaign"
         st.session_state.selected_store = selected_store_id
         
+        # Clear any existing campaign data to force reload
+        if 'selected_store_campaign_data' in st.session_state:
+            del st.session_state.selected_store_campaign_data
+        
         st.success(f"🔍 Selected store: **{selected_store_display}** - Loading campaign details...")
-        # Don't call st.rerun() - let the main function handle the display
+        # Don't call st.rerun() - let the main function handle the display without full reload
 
 def render_campaign_breakdown(todc_campaign_data: pd.DataFrame, corporate_campaign_data: pd.DataFrame):
     """Render campaign-level breakdown tables side by side"""
@@ -1517,9 +1581,9 @@ def send_ue_bottom_performers_alert():
     
     try:
         # Get bottom 5 performers for each category
-        bottom_operators = st.session_state.bigquery_client.get_ue_bottom_operators_by_sales(5)
-        bottom_stores = st.session_state.bigquery_client.get_ue_bottom_stores_by_sales(5)
-        bottom_campaigns = st.session_state.bigquery_client.get_ue_bottom_campaigns_by_sales(5)
+        bottom_operators = st.session_state.bigquery_orchestrator.get_ue_bottom_operators_by_sales(5)
+        bottom_stores = st.session_state.bigquery_orchestrator.get_ue_bottom_stores_by_sales(5)
+        bottom_campaigns = st.session_state.bigquery_orchestrator.get_ue_bottom_campaigns_by_sales(5)
         
         if bottom_operators.empty and bottom_stores.empty and bottom_campaigns.empty:
             return
@@ -1570,9 +1634,9 @@ def main():
     # Render sidebar and get filters
     start_date, end_date, selected_businesses = render_sidebar()
     
-    # Check if BigQuery client is available
-    if not st.session_state.bigquery_client:
-        st.error("❌ BigQuery client not initialized. Please check your service account file.")
+    # Check if BigQuery orchestrator is available
+    if not st.session_state.bigquery_orchestrator:
+        st.error("❌ BigQuery orchestrator not initialized. Please check your service account file.")
         return
     
     # Convert dates to strings
@@ -1585,91 +1649,132 @@ def main():
     # Load KPI data only if needed (platform or date changed)
     load_kpi_data_if_needed(st.session_state.selected_platform, start_date_str, end_date_str, store_ids)
     
-    # Always render KPI widgets (data is cached in session state)
-    render_kpi_widgets(st.session_state.wow_data, st.session_state.mom_data, wow_loading=False, mom_loading=False)
+    # Always render KPI widgets (they persist through drilldowns)
+    if st.session_state.wow_data or st.session_state.mom_data:
+        # Use a container to ensure KPI widgets don't reload
+        kpi_container = st.container()
+        with kpi_container:
+            st.subheader("📈 Key Performance Indicators")
+            display_kpi_widgets_side_by_side(st.session_state.wow_data, st.session_state.mom_data)
     
     # Render drilldown navigation
     render_drilldown_navigation()
     
-    # Load operator data only if needed
+    # Load operator data only if needed (stable caching)
     load_operator_data_if_needed(st.session_state.selected_platform, start_date_str, end_date_str, store_ids, selected_businesses)
     
     # Always render operator table (data is cached in session state)
-    render_operator_summary_table(st.session_state.operator_summary_data, loading=False)
+    operator_container = st.container()
+    with operator_container:
+        if hasattr(st.session_state, 'operator_summary_data') and not st.session_state.operator_summary_data.empty:
+            render_operator_summary_table(st.session_state.operator_summary_data, loading=False)
+        else:
+            render_operator_summary_table(pd.DataFrame(), loading=True)
     
     # Handle drilldown sections - only load when needed
     target_operators_data = get_operators_with_store_ids()
     
-    # Show store breakdown if an operator is selected
-    if st.session_state.drilldown_level in ["store", "campaign"] and st.session_state.selected_operator:
-        selected_operator_stores = target_operators_data.get(st.session_state.selected_operator, [])
+    # Show store breakdown if an operator is selected (always show when operator is selected)
+    if st.session_state.selected_operator:
+        # Use empty container to prevent full page refresh
+        store_placeholder = st.empty()
         
-        if selected_operator_stores:
-            # Get max date for the platform
-            max_date = get_max_date_for_platform(st.session_state.selected_platform)
-            if not max_date:
-                st.error("Could not determine max date for store data loading")
-                return
+        with store_placeholder.container():
+            # Check if we already have cached store data for this operator
+            cache_key = f"store_data_{st.session_state.selected_operator}_{st.session_state.selected_platform}"
             
-            # Load store data for the selected operator's stores only
-            if st.session_state.selected_platform == "ubereats":
-                # For UberEats, get all available data without date filters
-                selected_operator_store_data = st.session_state.bigquery_client.get_ue_operator_wise_data_all_time(
-                    selected_operator_stores
-                )
+            if cache_key in st.session_state and not st.session_state[cache_key].empty:
+                selected_operator_store_data = st.session_state[cache_key]
+                st.info(f"📊 Using cached store data for {st.session_state.selected_operator}")
             else:
-                # Use the new separate function for store-level data
-                selected_operator_store_data = st.session_state.bigquery_client.get_store_level_data_for_operator(
-                    st.session_state.selected_operator, selected_operator_stores
-                )
-            
-            # Only show warning if no data found
-            if selected_operator_store_data.empty:
-                if st.session_state.selected_platform == "ubereats":
-                    st.warning("⚠️ **No UberEats data found for these store IDs.**")
-                    st.warning("**Possible causes:**")
-                    st.warning("• Store IDs don't exist in UberEats BigQuery table")
-                    st.warning("• No UberEats campaign data for these stores")
-                    st.warning("• UberEats table may be empty or inaccessible")
-                    st.info("**Note:** UberEats data is limited to historical periods")
-                    st.info("**Store IDs checked:** " + ", ".join(selected_operator_stores[:5]) + ("..." if len(selected_operator_stores) > 5 else ""))
+                selected_operator_stores = target_operators_data.get(st.session_state.selected_operator, [])
+                
+                if selected_operator_stores:
+                    # Get max date for the platform
+                    max_date = get_max_date_for_platform(st.session_state.selected_platform)
+                    if not max_date:
+                        st.error("Could not determine max date for store data loading")
+                        return
+                    
+                    # Load store data for the selected operator's stores only using orchestrator
+                    with st.spinner(f"Loading store data for {st.session_state.selected_operator}..."):
+                        results = st.session_state.bigquery_orchestrator.run_operator_drilldown_parallel(
+                            st.session_state.selected_operator, st.session_state.selected_platform
+                        )
+                        selected_operator_store_data = results.get('store_data', pd.DataFrame())
+                        
+                        # Cache the data
+                        st.session_state[cache_key] = selected_operator_store_data
                 else:
-                    st.warning("⚠️ **No data found for these store IDs on this date.**")
-                    st.warning("**Possible causes:**")
-                    st.warning("• Store IDs don't exist in BigQuery table")
-                    st.warning("• No campaign data for these stores")
-                    st.warning("• Data sync issues between CSV and BigQuery")
-                    st.info(f"**Latest available data:** 2025-09-10")
-                    st.info(f"**Dashboard date:** {start_date_str}")
-            else:
-                # Send alert for stores with low WoW performance
-                send_operator_alert(st.session_state.selected_operator, selected_operator_store_data)
+                    selected_operator_store_data = pd.DataFrame()
+                
+                # Only show warning if no data found
+                if selected_operator_store_data.empty:
+                    if st.session_state.selected_platform == "ubereats":
+                        st.warning("⚠️ **No UberEats data found for these store IDs.**")
+                        st.warning("**Possible causes:**")
+                        st.warning("• Store IDs don't exist in UberEats BigQuery table")
+                        st.warning("• No UberEats campaign data for these stores")
+                        st.warning("• UberEats table may be empty or inaccessible")
+                        st.info("**Note:** UberEats data is limited to historical periods")
+                        st.info("**Store IDs checked:** " + ", ".join(selected_operator_stores[:5]) + ("..." if len(selected_operator_stores) > 5 else ""))
+                    else:
+                        st.warning("⚠️ **No data found for these store IDs on this date.**")
+                        st.warning("**Possible causes:**")
+                        st.warning("• Store IDs don't exist in BigQuery table")
+                        st.warning("• No campaign data for these stores")
+                        st.warning("• Data sync issues between CSV and BigQuery")
+                        st.info(f"**Latest available data:** 2025-09-10")
+                        st.info(f"**Dashboard date:** {start_date_str}")
+                else:
+                    # Send alert for stores with low WoW performance
+                    send_operator_alert(st.session_state.selected_operator, selected_operator_store_data)
+            
+            # Show which store is selected if we're in campaign mode
+            if st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
+                st.info(f"🎯 **Selected Store:** {st.session_state.selected_store}")
             
             render_store_wise_breakdown(selected_operator_store_data, loading=False)
-        else:
-            st.warning(f"No stores found for operator: {st.session_state.selected_operator}")
+    else:
+        st.warning(f"No stores found for operator: {st.session_state.selected_operator}")
     
     # Show campaign breakdown if a store is selected
     if st.session_state.drilldown_level == "campaign" and st.session_state.selected_store:
-        # Load campaign data for the selected store
-        if st.session_state.selected_platform == "ubereats":
-            # For UberEats, get all available campaign data without date filters
-            campaigns_data = st.session_state.bigquery_client.get_ue_top_campaigns_all_time([st.session_state.selected_store])
-            # For UberEats, we'll use the same data for both tables since we don't have IS_SELF_SERVE_CAMPAIGN
-            todc_campaigns_data = campaigns_data
-            corporate_campaigns_data = campaigns_data
-        else:
-            # Load both TODC and Corporate campaign data
-            todc_campaigns_data = st.session_state.bigquery_client.get_todc_campaigns(30, [st.session_state.selected_store])
-            corporate_campaigns_data = st.session_state.bigquery_client.get_corporate_campaigns(30, [st.session_state.selected_store])
+        # Use empty container to prevent full page refresh
+        campaign_placeholder = st.empty()
         
-        # Send alert for campaigns with low WoW performance (using TODC data for alerts)
-        if not todc_campaigns_data.empty:
-            # Get store name from the campaign data
-            store_name = todc_campaigns_data['STORE_NAME'].iloc[0] if 'STORE_NAME' in todc_campaigns_data.columns else st.session_state.selected_store
-            send_store_alert(store_name, todc_campaigns_data)
-        
-        render_campaign_breakdown(todc_campaigns_data, corporate_campaigns_data)
+        with campaign_placeholder.container():
+            st.markdown("---")  # Visual separator
+            # Check if we already have cached campaign data for this store
+            cache_key = f"campaign_data_{st.session_state.selected_store}_{st.session_state.selected_platform}"
+            
+            if cache_key in st.session_state and st.session_state[cache_key]:
+                campaign_results = st.session_state[cache_key]
+                todc_campaigns_data = campaign_results.get('todc_campaigns', pd.DataFrame())
+                corporate_campaigns_data = campaign_results.get('corporate_campaigns', pd.DataFrame())
+                st.info(f"📊 Using cached campaign data for store {st.session_state.selected_store}")
+            else:
+                # Load campaign data for the selected store using orchestrator
+                with st.spinner(f"Loading campaign data for store {st.session_state.selected_store}..."):
+                    results = st.session_state.bigquery_orchestrator.run_store_drilldown_parallel(
+                        st.session_state.selected_store, st.session_state.selected_platform
+                    )
+                    todc_campaigns_data = results.get('todc_campaigns', pd.DataFrame())
+                    corporate_campaigns_data = results.get('corporate_campaigns', pd.DataFrame())
+                    
+                    # Cache the data
+                    st.session_state[cache_key] = {
+                        'todc_campaigns': todc_campaigns_data,
+                        'corporate_campaigns': corporate_campaigns_data
+                    }
+            
+            # Send alert for campaigns with low WoW performance (using TODC data for alerts)
+            if not todc_campaigns_data.empty:
+                # Get store name from the campaign data
+                store_name = todc_campaigns_data['STORE_NAME'].iloc[0] if 'STORE_NAME' in todc_campaigns_data.columns else st.session_state.selected_store
+                send_store_alert(store_name, todc_campaigns_data)
+            
+            render_campaign_breakdown(todc_campaigns_data, corporate_campaigns_data)
     
     # Send dashboard summary to Slack on load (only once per session)
     if not st.session_state.get('slack_summary_sent', False):
